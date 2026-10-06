@@ -359,7 +359,42 @@ bool AddToModsUI(const std::string& sceneName, std::string& message)
         Full(w);
         w->SetVisible(false); // shown by its tab
     });
-    Widget* list = Array(b, page, "List", false, 4.0f, 0.0f, At(0, 0, 0, kRowH));
+    if (page == nullptr)
+    {
+        message = "Page_Netplay exists but is not a ScrollContainer: left as it is.";
+        return false;
+    }
+    // The list scrolls in its own ScrollContainer filling the page (one put around the list by
+    // hand is kept); the page itself stays still. NetplayMenu scrolls it with the selection.
+    page->SetScrollSizeMode(ScrollSizeMode::None);
+    page->SetVerticalScrollbarMode(ScrollbarMode::Hidden);
+    page->SetScrollOffset(glm::vec2(0.0f));
+    ScrollContainer* listScroll = nullptr;
+    Node* oldList = page->FindChild("List", true);
+    if (oldList != nullptr && oldList->GetParent() != page)
+    {
+        listScroll = oldList->GetParent()->As<ScrollContainer>();
+    }
+    if (listScroll == nullptr)
+    {
+        listScroll = Scroll(b, page, "ListScroll", false, Full);
+    }
+    if (listScroll == nullptr)
+    {
+        message = "Page_Netplay/ListScroll exists but is not a ScrollContainer: left as it is.";
+        return false;
+    }
+    Full(listScroll);
+    listScroll->SetScrollSizeMode(ScrollSizeMode::FitWidth);
+    listScroll->SetHorizontalScrollbarMode(ScrollbarMode::Hidden);
+    listScroll->SetVerticalScrollbarMode(ScrollbarMode::Auto);
+    listScroll->SetScrollbarWidth(6.0f);
+    listScroll->SetChildInputPriority(true);
+    if (oldList != nullptr && oldList->GetParent() != listScroll)
+    {
+        oldList->Attach(listScroll, false, 0);
+    }
+    Widget* list = Array(b, listScroll, "List", false, 4.0f, 0.0f, At(0, 0, 0, kRowH));
     if (list == nullptr)
     {
         message = "Page_Netplay/List exists but is not an ArrayWidget: left as it is.";

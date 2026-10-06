@@ -78,9 +78,11 @@ in packaged games.
 **In the Mods UI.** The same window's **Add Netplay to the Mods UI** button (also
 **Tools > Recomp > UI > Add Netplay to Mods UI...**) adds a **Netplay** tab and page to the
 game's Mod Settings scene. They are made the way com.recomp.mod.base makes its own
-(`Tab_Netplay` with `@page:Netplay`, and `Page_Netplay > List`), so its page switching, gamepad
-navigation and Menu Style work on them. Regenerating the Mods UI keeps them; run Add again
-afterwards so the tab strip stays wide enough.
+(`Tab_Netplay` with `@page:Netplay`), so its page switching, gamepad navigation and Menu Style
+work on them. The page holds `ListScroll > List`: the list scrolls in its own ScrollContainer
+(a ScrollContainer already around the list is kept), and the menu scrolls it so the selected
+button stays in view, so a controller reaches every row on a 480-line screen. Regenerating the
+Mods UI keeps them; run Add again afterwards so the tab strip stays wide enough.
 
 **SignalBus.** The engine's global bus, `GetSignalBus()` in C++ and `SignalBus` in Lua:
 

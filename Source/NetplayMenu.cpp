@@ -7,6 +7,7 @@
 
 #include "Nodes/Widgets/Button.h"
 #include "Nodes/Widgets/InputField.h"
+#include "Nodes/Widgets/ScrollContainer.h"
 #include "Nodes/Widgets/Text.h"
 #include "Engine.h"
 #include "Property.h"
@@ -603,4 +604,90 @@ void NetplayMenu::Tick(float deltaTime)
         }
     }
     SetText(root, "Note", mNote);
+
+    KeepSelectionInView();
+}
+
+void NetplayMenu::KeepSelectionInView()
+{
+    Node* scope = Scope(this, this);
+    Node* page = ModsPage();
+    if (page != nullptr)
+    {
+        // the Mods UI's footer (Save / Reset / Close) goes back up to the menu's last row
+        // (the page shows set it to the first button found, as the list is in its own scroll)
+        Button* last = Find<Button>(scope, "Start");
+        Node* root = page;
+        while (root->GetParent() != nullptr)
+        {
+            root = root->GetParent();
+        }
+        Node* footer = root->FindChild("Footer", true);
+        for (uint32_t i = 0; last != nullptr && footer != nullptr && i < footer->GetNumChildren(); ++i)
+        {
+            if (Button* b = footer->GetChild((int32_t)i)->As<Button>())
+            {
+                if (b->GetNavUp() != last)
+                {
+                    b->SetNavUp(last);
+                }
+            }
+        }
+    }
+
+    Button* selected = Button::GetSelectedButton();
+    bool inMenu = false;
+    for (Node* n = selected; n != nullptr && !inMenu; n = n->GetParent())
+    {
+        inMenu = n == scope;
+    }
+    if (!inMenu)
+    {
+        return;
+    }
+    const float kEdge = 6.0f;
+    // the first row shows the menu's top too (status, players)
+    const bool top = selected->GetName() == "Host";
+    for (Node* n = selected->GetParent(); n != nullptr; n = n->GetParent())
+    {
+        ScrollContainer* scroll = n->As<ScrollContainer>();
+        Widget* content = scroll != nullptr ? scroll->GetContentWidget() : nullptr;
+        if (content != nullptr)
+        {
+            // its content size is measured only while it's dirty (not while hidden)
+            if (scroll->GetContentSize().y != content->GetHeight())
+            {
+                scroll->MarkDirty();
+            }
+            const Rect view = scroll->GetRect();
+            const Rect c = content->GetRect();
+            const Rect r = selected->GetRect();
+            const glm::vec2 s = scroll->GetAbsoluteScale();
+            if (s.y > 0.0f && view.mHeight > 0.0f && r.mHeight > 0.0f)
+            {
+                // in the content's own units, so the current offset doesn't matter
+                const float viewH = view.mHeight / s.y;
+                const float y0 = top ? 0.0f : (r.mY - c.mY) / s.y;
+                const float y1 = (r.mY - c.mY + r.mHeight) / s.y;
+                float offset = scroll->GetScrollOffset().y;
+                if (y0 - kEdge < offset)
+                {
+                    offset = y0 - kEdge;
+                }
+                else if (y1 + kEdge > offset + viewH)
+                {
+                    offset = y1 + kEdge - viewH;
+                }
+                offset = std::max(0.0f, std::min(offset, content->GetHeight() - viewH));
+                if (offset != scroll->GetScrollOffset().y)
+                {
+                    scroll->SetScrollOffsetY(offset);
+                }
+            }
+        }
+        if (n == page)
+        {
+            break;
+        }
+    }
 }

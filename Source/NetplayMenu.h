@@ -86,6 +86,9 @@ public:
 protected:
     void SetNote(const std::string& note);
     Node* ModsPage();
+    // Scrolls the ScrollContainers the menu sits in so the selected button is in view (the
+    // menu is taller than a 480-line screen: moving down scrolls down).
+    void KeepSelectionInView();
 
     std::string mNote;
     float mNoteTime = 0.0f;
