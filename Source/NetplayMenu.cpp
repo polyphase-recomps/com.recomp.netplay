@@ -264,6 +264,34 @@ void NetplayMenu::CloseMenu()
     }
 }
 
+namespace
+{
+void RefreshTree(Node* node)
+{
+    if (node == nullptr)
+    {
+        return;
+    }
+    if (Text* text = node->As<Text>())
+    {
+        text->MarkVerticesDirty();
+    }
+    if (Widget* widget = node->As<Widget>())
+    {
+        widget->MarkDirty();
+    }
+    for (uint32_t i = 0; i < node->GetNumChildren(); ++i)
+    {
+        RefreshTree(node->GetChild((int32_t)i));
+    }
+}
+}
+
+void NetplayMenu::RefreshWidgets()
+{
+    RefreshTree(Scope(this, this));
+}
+
 bool NetplayMenu::OpenAny(const std::string& uiName)
 {
     for (NetplayMenu* menu : sMenus)
@@ -325,6 +353,10 @@ void NetplayMenu::TickAll()
         if (open != menu->mWasOpen)
         {
             menu->mWasOpen = open;
+            if (open)
+            {
+                menu->RefreshWidgets();
+            }
             GetSignalBus()->Emit(open ? "Netplay.Opened" : "Netplay.Closed",
                                  {Datum(menu->UiName()), Datum(StateName(state))});
         }

@@ -73,6 +73,9 @@ public:
     void CloseMenu();
     bool IsMenuOpen();
     std::string UiName();
+    // Redraws the menu's texts and fields: widgets that were hidden since the scene loaded
+    // (a Mods UI page) can still show their defaults ("Text", nothing) when they appear.
+    void RefreshWidgets();
 
     static const int kFoundSlots = 4;
 
