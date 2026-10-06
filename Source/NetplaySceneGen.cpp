@@ -40,10 +40,12 @@ const float kRowH = 32.0f;
 const float kGap = 6.0f;
 const float kPad = 16.0f;
 const float kTabW = 120.0f; // as the Mods UI's tabs
-// the sessions found scroll in a box this tall (two rows): the whole list doesn't fit a
-// 640x480 Wii / GameCube screen
-const float kFoundViewH = 2 * kRowH + kGap;
 const float kFoundListH = NetplayMenu::kFoundSlots * kRowH + (NetplayMenu::kFoundSlots - 1) * kGap;
+// The menu's column is at least this tall. It sits in a vertical scroll box (the Mods UI page,
+// or the Network scene's Scroll), which can only scroll as far as the column is tall: shorter
+// than its rows, the bottom ones (Start, Leave) were out of reach on a 640x480 screen, also for
+// the gamepad (the menu controller scrolls the selected button into view).
+const float kMinColumnH = 694.0f;
 EditorUIHooks* sHooks = nullptr;
 
 struct Options
@@ -102,30 +104,27 @@ std::vector<std::vector<Button*>> BuildRows(Builder& b, Widget* column, bool wit
     NetplayButton* delayUp = Btn(b, delayRow, "DelayUp", "+", "delay+", At(0, 0, 44, kRowH));
 
     NetplayButton* search = Btn(b, column, "Search", "Search the LAN", "search", FullWidth(kRowH));
-    // the sessions found: a short vertical scroll box (the menu controller scrolls the selected
-    // one into view; the right stick and the mouse wheel scroll it too)
-    ScrollContainer* foundScroll = Scroll(b, column, "FoundScroll", false, FullWidth(kFoundViewH));
-    Node* foundParent = column;
-    if (foundScroll != nullptr)
+    // the sessions found: all four rows, in the column (the whole menu scrolls). A scene made with
+    // the short "FoundScroll" box (one row showed): its list moves back out, the box goes.
+    if (Node* box = column->FindChild("FoundScroll", false))
     {
-        foundParent = foundScroll;
-        // right after the Search button (a scroll box added to an older scene lands last)
+        if (Node* old = box->FindChild("Found", false))
+        {
+            old->Attach(column, false, column->FindChildIndex(box));
+        }
+        column->RemoveChild(box);
+    }
+    Widget* found = Array(b, column, "Found", false, kGap, 0.0f, FullWidth(kFoundListH));
+    if (found != nullptr)
+    {
+        FullWidth(kFoundListH)(found); // (also for a list that was in the box)
+        // right after the Search button
         const int32_t searchAt = column->FindChildIndex("Search");
-        const int32_t at = column->FindChildIndex(foundScroll);
+        const int32_t at = column->FindChildIndex(found);
         if (searchAt >= 0 && at != searchAt + 1)
         {
-            foundScroll->Attach(column, false, at > searchAt ? searchAt + 1 : searchAt);
+            found->Attach(column, false, at > searchAt ? searchAt + 1 : searchAt);
         }
-        // a scene made before the scroll box: its list moves in
-        if (Node* old = column->FindChild("Found", false))
-        {
-            old->Attach(foundScroll, false, 0);
-        }
-    }
-    Widget* found = Array(b, foundParent, "Found", false, kGap, 0.0f, At(0, 0, 0, kFoundListH));
-    if (found != nullptr && foundScroll != nullptr)
-    {
-        found->SetHeight(kFoundListH); // the scrolled content is as tall as its rows
     }
     std::vector<std::vector<Button*>> rows = {{host}, {join}, {delayDown, delayUp}, {search}};
     for (int i = 0; i < NetplayMenu::kFoundSlots; i++)
@@ -147,7 +146,7 @@ std::vector<std::vector<Button*>> BuildRows(Builder& b, Widget* column, bool wit
         rows.push_back({start, leave});
     }
 
-    const float heights[] = {44, 84, 20, kRowH, kRowH, kRowH, kRowH, kFoundViewH, kRowH};
+    const float heights[] = {44, 84, 20, kRowH, kRowH, kRowH, kRowH, kFoundListH, kRowH};
     height = 0.0f;
     for (float h : heights)
     {
@@ -261,7 +260,8 @@ bool Generate(const Options& options, std::string& message)
     }
     float rowsHeight = 0.0f;
     std::vector<std::vector<Button*>> rows = BuildRows(b, layout, true, rowsHeight);
-    layout->SetHeight(2 * kPad + 34.0f + kGap + rowsHeight); // a scrolled list is as tall as its content
+    // a scrolled list is as tall as its content (at least kMinColumnH, so all of it scrolls into view)
+    layout->SetHeight(std::max(kMinColumnH, 2 * kPad + 34.0f + kGap + rowsHeight));
     LinkNavigation(rows);
 
     Button* first = rows.empty() ? nullptr : rows.front().front();
@@ -369,7 +369,7 @@ bool AddToModsUI(const std::string& sceneName, std::string& message)
     std::vector<std::vector<Button*>> rows = BuildRows(b, list, false, height);
     // the menu that keeps the page up to date (looks its widgets up within this list)
     b.Ensure<NetplayMenu>(list, "NetplayMenu", [](NetplayMenu* n) { Place(n, 0.0f, 0.0f, 0.0f, 0.0f); });
-    list->SetHeight(height + 4.0f);
+    list->SetHeight(std::max(kMinColumnH, height + 4.0f)); // all of it scrolls into view
     LinkNavigation(rows);
 
     // gamepad: tab row <-> our tab, tab -> the page's first button, first row -> the tab,
