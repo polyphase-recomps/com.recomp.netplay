@@ -1,0 +1,24 @@
+{
+    "name": "com.recomp.netplay",
+    "author": "",
+    "displayName": "Recomp Netplay",
+    "description": "Networked multiplayer for the recomp game runtimes (N64 first): lockstep input sync over UDP, LAN discovery and IP:port joining, save sync, desync detection. Cross-platform (Windows, Linux, macOS).",
+    "version": "1.0.0",
+    "native": {
+        "target": "engine",
+        "sourceDir": "Source",
+        "binaryName": "com.recomp.netplay",
+        "entrySymbol": "PolyphasePlugin_GetDesc",
+        "apiVersion": 3,
+        "resolveMode": "source",
+        "exportDefine": "NETPLAY_EXPORTS",
+        "binaries": []
+    },
+    "nativePerPlatform": {
+        "Windows": {
+            "extraLibs": [
+                "ws2_32.lib"
+            ]
+        }
+    }
+}

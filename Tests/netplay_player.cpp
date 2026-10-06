@@ -1,0 +1,191 @@
+/*
+ * The game-player side of netplay, headless: what an N64 game's player node does in the editor
+ * (NetplaySession + NetplayN64::RunFrames), driven by a fake 60 Hz tick. Boots the game alone
+ * first (as a player does), then hosts or joins; when the session starts every machine reboots
+ * the game with the host's save and plays on the session's inputs, with the desync check on.
+ *
+ *   netplay_player --rom game.z64 --host [port] --players 2 [--save start.sra] --frames 3000
+ *   netplay_player --rom game.z64 --join addr[:port] --frames 3000
+ *
+ * Ends with "frames N, final picture hash H, <status>": H must match on every machine, and the
+ * status must not be a desync.
+ */
+#include "port_host.h"
+
+#include "NetplayN64.h"
+#include "NetplaySession.h"
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#if defined(_WIN32)
+#include <windows.h>
+static void Nap() { Sleep(1); }
+#else
+#include <time.h>
+static void Nap()
+{
+    struct timespec ts = {0, 1000000};
+    nanosleep(&ts, nullptr);
+}
+#endif
+
+// This machine's controller: random input from frame 400 on, a pure function of (seed, port,
+// frame) so runs repeat exactly; port 0 also presses START early on to get past the intro.
+static PortPad FuzzPad(unsigned seed, int port, int frame)
+{
+    static const unsigned short choices[] = {0x8000, 0x8000, 0x8000, 0x4000, 0x4000, 0x1000, 0x2000,
+                                             0x0010, 0x0008, 0x0004, 0,      0,      0,      0, 0};
+    static const signed char sticks[] = {0, 0, 0, 80, -80, 40, -40};
+    PortPad pad = {};
+
+    if (frame < 400)
+    {
+        return pad;
+    }
+    unsigned r = (seed * 2654435761u) ^ ((unsigned)port * 40503u) ^ ((unsigned)(frame / 10) * 0x9E3779B9u);
+    r ^= r >> 15;
+    r *= 0x2C1B3C6Du;
+    r ^= r >> 12;
+    pad.buttons = choices[r % (sizeof(choices) / sizeof(choices[0]))];
+    pad.stick_x = sticks[(r >> 5) % sizeof(sticks)];
+    pad.stick_y = sticks[(r >> 9) % sizeof(sticks)];
+    pad.connected = 1;
+    if (frame < 1000 && port == 0 && (r & 3) == 0)
+    {
+        pad.buttons = 0x1000;
+    }
+    return pad;
+}
+
+int main(int argc, char** argv)
+{
+    const char *rom = nullptr, *join = nullptr, *savePath = nullptr, *dir = ".";
+    int hostPort = -1, players = 2, frames = 3000;
+    unsigned seed = 1234;
+
+    for (int i = 1; i < argc; i++)
+    {
+        if (!std::strcmp(argv[i], "--rom") && i + 1 < argc) rom = argv[++i];
+        else if (!std::strcmp(argv[i], "--host"))
+        {
+            hostPort = NETPLAY_DEFAULT_PORT;
+            if (i + 1 < argc && argv[i + 1][0] != '-') hostPort = std::atoi(argv[++i]);
+        }
+        else if (!std::strcmp(argv[i], "--join") && i + 1 < argc) join = argv[++i];
+        else if (!std::strcmp(argv[i], "--players") && i + 1 < argc) players = std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "--frames") && i + 1 < argc) frames = std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "--save") && i + 1 < argc) savePath = argv[++i];
+        else if (!std::strcmp(argv[i], "--dir") && i + 1 < argc) dir = argv[++i];
+        else if (!std::strcmp(argv[i], "--fuzz") && i + 1 < argc) seed = (unsigned)std::strtoul(argv[++i], nullptr, 10);
+        else
+        {
+            std::fprintf(stderr, "usage: netplay_player --rom game.z64 (--host [port] --players N [--save f] | --join a[:p])"
+                                 " [--frames N] [--dir d] [--fuzz s]\n");
+            return 2;
+        }
+    }
+    if (rom == nullptr || (hostPort < 0 && join == nullptr))
+    {
+        return 2;
+    }
+    frames -= frames % NETPLAY_HASH_INTERVAL; // end on a frame that is always drawn
+
+    // the player boots the game on its own first, and tells the session what it plays
+    const std::string ownSave = savePath ? savePath : "";
+    n64_set_save_path(ownSave.c_str());
+    if (!n64_boot(rom))
+    {
+        std::fprintf(stderr, "the game did not boot\n");
+        return 1;
+    }
+    NetplayN64::Configure("ssb64", "Super Smash Bros.", "recomp", rom, ownSave, players);
+
+    if (hostPort >= 0 ? !NetplaySession::Host(hostPort) : !NetplaySession::Join(join))
+    {
+        std::printf("%s\n", netplay_status_text(NetplaySession::Get()));
+        return 1;
+    }
+
+    float accumulator = 0.0f;
+    int localFrames = 0, reboots = 0;
+    std::string last;
+    for (;;)
+    {
+        Netplay* np = NetplaySession::Get();
+        NetplaySession::Poll(); // the addon's tick
+        const NetplayState state = netplay_state(np);
+        const std::string status = netplay_status_text(np);
+
+        if (status != last && state != NETPLAY_RUNNING)
+        {
+            std::printf("%s\n", status.c_str());
+            std::fflush(stdout);
+            last = status;
+        }
+        if (state == NETPLAY_DESYNC || state == NETPLAY_DISCONNECTED || state == NETPLAY_ERROR)
+        {
+            break;
+        }
+        if (state == NETPLAY_LOBBY)
+        {
+            NetplayPlayerInfo list[4];
+            const int n = netplay_players(np, list, 4);
+            int ready = 0;
+            for (int k = 1; k < n; k++)
+            {
+                ready += list[k].ready;
+            }
+            if (n >= players && ready == n - 1)
+            {
+                NetplaySession::Start();
+            }
+        }
+        if (state == NETPLAY_RUNNING && netplay_current_frame(np) >= frames)
+        {
+            break;
+        }
+
+        // the player's Tick: netplay first, its own frames otherwise
+        const int port = netplay_local_port(np) < 0 ? 0 : netplay_local_port(np);
+        const PortPad local = FuzzPad(seed, port, netplay_current_frame(np) + netplay_input_delay(np));
+        auto reboot = [&](const std::string& save) {
+            n64_shutdown();
+            n64_set_save_path(save.c_str());
+            if (!n64_boot(rom))
+            {
+                std::fprintf(stderr, "reboot failed\n");
+                std::exit(1);
+            }
+            reboots++;
+        };
+        if (NetplayN64::RunFrames(1.0f / 60.0f, local, reboot, [] {}, dir, accumulator, 1) < 0)
+        {
+            // not in a running session: the game plays alone (the lobby keeps it ticking)
+            PortPad idle = {};
+            idle.connected = 1;
+            n64_set_pad(0, &idle);
+            n64_run_frame();
+            localFrames++;
+        }
+        Nap();
+    }
+
+    Netplay* np = NetplaySession::Get();
+    int w = 0, h = 0;
+    const unsigned char* fb = n64_framebuffer(&w, &h);
+    const uint64_t hash = fb ? netplay_hash(NETPLAY_HASH_SEED, fb, (size_t)w * h * 4) : 0;
+    const int ran = netplay_current_frame(np);
+    std::printf("frames %d, final picture hash %016llx, reboots %d, waits %u, %s\n", ran, (unsigned long long)hash, reboots,
+                netplay_stall_count(np), netplay_status_text(np));
+    std::fflush(stdout);
+    for (int i = 0; i < 2000; i++) // the others may still need our input
+    {
+        NetplaySession::Poll();
+        Nap();
+    }
+    NetplaySession::Shutdown();
+    n64_shutdown();
+    return ran == frames && reboots == 1 ? 0 : 1;
+}
