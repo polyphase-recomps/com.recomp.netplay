@@ -76,6 +76,10 @@ public:
     // Redraws the menu's texts and fields: widgets that were hidden since the scene loaded
     // (a Mods UI page) can still show their defaults ("Text", nothing) when they appear.
     void RefreshWidgets();
+    // Links the gamepad navigation of the menu's buttons (by name, under `scope`), top to bottom:
+    // Host, Join, DelayDown / DelayUp, Search, Found_0..3, Start / Leave / Close. Overwrites the
+    // links inside the menu; keeps the first row's up and the last row's down (they lead out).
+    static void LinkNavigation(Node* scope);
 
     static const int kFoundSlots = 4;
 

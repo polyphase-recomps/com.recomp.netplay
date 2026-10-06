@@ -262,7 +262,7 @@ bool Generate(const Options& options, std::string& message)
     std::vector<std::vector<Button*>> rows = BuildRows(b, layout, true, rowsHeight);
     // a scrolled list is as tall as its content (at least kMinColumnH, so all of it scrolls into view)
     layout->SetHeight(std::max(kMinColumnH, 2 * kPad + 34.0f + kGap + rowsHeight));
-    LinkNavigation(rows);
+    NetplayMenu::LinkNavigation(layout); // overwrites stale links (scenes from older versions)
 
     Button* first = rows.empty() ? nullptr : rows.front().front();
     RecompMenuController* controller = b.Ensure<RecompMenuController>(root.Get(), "MenuController",
@@ -370,7 +370,7 @@ bool AddToModsUI(const std::string& sceneName, std::string& message)
     // the menu that keeps the page up to date (looks its widgets up within this list)
     b.Ensure<NetplayMenu>(list, "NetplayMenu", [](NetplayMenu* n) { Place(n, 0.0f, 0.0f, 0.0f, 0.0f); });
     list->SetHeight(std::max(kMinColumnH, height + 4.0f)); // all of it scrolls into view
-    LinkNavigation(rows);
+    NetplayMenu::LinkNavigation(list); // overwrites stale links (pages from older versions)
 
     // gamepad: tab row <-> our tab, tab -> the page's first button, first row -> the tab,
     // last row -> the footer's Save (the footer's way back up is set when the page shows)
@@ -379,15 +379,15 @@ bool AddToModsUI(const std::string& sceneName, std::string& message)
         if (!otherTabs.empty())
         {
             Button* last = otherTabs.back();
-            if (last->GetNavRight() == nullptr) last->SetNavRight(tab);
-            if (tab->GetNavLeft() == nullptr) tab->SetNavLeft(last);
+            last->SetNavRight(tab);
+            tab->SetNavLeft(last);
         }
         if (!rows.empty())
         {
-            if (tab->GetNavDown() == nullptr) tab->SetNavDown(rows.front().front());
+            tab->SetNavDown(rows.front().front());
             for (Button* btn : rows.front())
             {
-                if (btn->GetNavUp() == nullptr) btn->SetNavUp(tab);
+                btn->SetNavUp(tab);
             }
         }
     }
@@ -397,7 +397,7 @@ bool AddToModsUI(const std::string& sceneName, std::string& message)
     {
         for (Button* btn : rows.back())
         {
-            if (btn->GetNavDown() == nullptr) btn->SetNavDown(save);
+            btn->SetNavDown(save);
         }
     }
     ApplyGameStyle(root.Get());

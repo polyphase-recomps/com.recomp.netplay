@@ -179,6 +179,8 @@ void NetplayMenu::Start()
     {
         sMenus.push_back(this);
     }
+    // a scene saved by an older generator can carry stale links (the gamepad stopped at Search)
+    LinkNavigation(Scope(this, this));
     GetSignalBus()->Subscribe("Netplay.Open", this, OnOpenSignal);
 }
 
@@ -290,6 +292,55 @@ void RefreshTree(Node* node)
 void NetplayMenu::RefreshWidgets()
 {
     RefreshTree(Scope(this, this));
+}
+
+void NetplayMenu::LinkNavigation(Node* scope)
+{
+    std::vector<std::vector<const char*>> names = {{"Host"}, {"Join"}, {"DelayDown", "DelayUp"}, {"Search"}};
+    static const char* const kFound[kFoundSlots] = {"Found_0", "Found_1", "Found_2", "Found_3"};
+    for (const char* found : kFound)
+    {
+        names.push_back({found});
+    }
+    names.push_back({"Start", "Leave", "Close"});
+
+    std::vector<std::vector<Button*>> rows;
+    for (const std::vector<const char*>& rowNames : names)
+    {
+        std::vector<Button*> row;
+        for (const char* name : rowNames)
+        {
+            if (Button* b = Find<Button>(scope, name))
+            {
+                row.push_back(b);
+            }
+        }
+        if (!row.empty())
+        {
+            rows.push_back(row);
+        }
+    }
+    // every link inside the menu, overwritten; the first row's up and the last row's down lead
+    // out of it (the Mods UI's tab, its Save) and are kept
+    for (size_t r = 0; r < rows.size(); ++r)
+    {
+        for (size_t c = 0; c < rows[r].size(); ++c)
+        {
+            Button* btn = rows[r][c];
+            btn->SetNavLeft(c > 0 ? rows[r][c - 1] : nullptr);
+            btn->SetNavRight(c + 1 < rows[r].size() ? rows[r][c + 1] : nullptr);
+            if (r > 0)
+            {
+                const std::vector<Button*>& up = rows[r - 1];
+                btn->SetNavUp(up[c < up.size() ? c : up.size() - 1]);
+            }
+            if (r + 1 < rows.size())
+            {
+                const std::vector<Button*>& down = rows[r + 1];
+                btn->SetNavDown(down[c < down.size() ? c : down.size() - 1]);
+            }
+        }
+    }
 }
 
 bool NetplayMenu::OpenAny(const std::string& uiName)
