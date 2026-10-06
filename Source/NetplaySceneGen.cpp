@@ -366,7 +366,10 @@ bool AddToModsUI(const std::string& sceneName, std::string& message)
     }
     // The list scrolls in its own ScrollContainer filling the page (one put around the list by
     // hand is kept); the page itself stays still. NetplayMenu scrolls it with the selection.
-    page->SetScrollSizeMode(ScrollSizeMode::None);
+    // FitBoth: the page sizes it to itself every layout (a ScrollContainer anchors its content
+    // top-left, so a stretched one kept a stale size, wider than the page: it scrolled sideways).
+    page->SetScrollSizeMode(ScrollSizeMode::FitBoth);
+    page->SetHorizontalScrollbarMode(ScrollbarMode::Hidden);
     page->SetVerticalScrollbarMode(ScrollbarMode::Hidden);
     page->SetScrollOffset(glm::vec2(0.0f));
     ScrollContainer* listScroll = nullptr;

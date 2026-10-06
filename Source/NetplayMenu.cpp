@@ -5,6 +5,8 @@
 #include "NetplayMenu.h"
 #include "NetplaySession.h"
 
+#include "ModBaseProvider.h" // com.recomp.mod.base: Recomp_PointerInUse
+
 #include "Nodes/Widgets/Button.h"
 #include "Nodes/Widgets/InputField.h"
 #include "Nodes/Widgets/ScrollContainer.h"
@@ -635,6 +637,26 @@ void NetplayMenu::KeepSelectionInView()
         }
     }
 
+    if (ScrollContainer* pageScroll = page != nullptr ? page->As<ScrollContainer>() : nullptr)
+    {
+        // a page saved before the page sized its list scroll (see NetplaySceneGen)
+        Widget* content = pageScroll->GetContentWidget();
+        if (content != nullptr && content->As<ScrollContainer>() != nullptr &&
+            pageScroll->GetScrollSizeMode() != ScrollSizeMode::FitBoth)
+        {
+            pageScroll->SetScrollSizeMode(ScrollSizeMode::FitBoth);
+            pageScroll->SetHorizontalScrollbarMode(ScrollbarMode::Hidden);
+            pageScroll->SetVerticalScrollbarMode(ScrollbarMode::Hidden);
+            pageScroll->SetScrollOffset(glm::vec2(0.0f));
+        }
+    }
+
+    // the selection follows the mouse while it's in use: scrolling then would move another
+    // button under the pointer, which selects it, which scrolls... (the list jittered)
+    if (Recomp_PointerInUse())
+    {
+        return;
+    }
     Button* selected = Button::GetSelectedButton();
     bool inMenu = false;
     for (Node* n = selected; n != nullptr && !inMenu; n = n->GetParent())
