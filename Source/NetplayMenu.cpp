@@ -557,7 +557,14 @@ void NetplayMenu::Tick(float deltaTime)
     SetText(root, "Players", players);
 
     char delay[16];
-    std::snprintf(delay, sizeof(delay), "%d", NetplaySession::InputDelay());
+    if (NetplaySession::InputDelay() == 0)
+    {
+        std::snprintf(delay, sizeof(delay), "Auto");
+    }
+    else
+    {
+        std::snprintf(delay, sizeof(delay), "%d", NetplaySession::InputDelay());
+    }
     SetText(root, "DelayValue", delay);
 
     SetLabel(root, "Search", mSearching ? "Searching the LAN... (press to stop)" : "Search the LAN");

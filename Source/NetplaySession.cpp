@@ -22,7 +22,7 @@ struct GameInfo
 GameInfo sGame;
 std::string sSaveFile;
 std::string sPlayerName;
-int sInputDelay = 2;
+int sInputDelay = 0; // auto (netplay picks it from the round trips at the start)
 Netplay* sSession = nullptr;
 bool sSessionMatchesGame = false;
 NetplayState sLastState = NETPLAY_IDLE;
@@ -77,6 +77,8 @@ Netplay* Session()
     config.max_players = sGame.maxPlayers;
     config.input_delay = sInputDelay;
     sSession = netplay_create(&config);
+    // packets are handled as they arrive, not once per game frame (less delay needed)
+    netplay_set_background(sSession, 1);
     sSessionMatchesGame = true;
     return sSession;
 }
@@ -218,7 +220,7 @@ const char* NetplaySession::PlayerName()
 
 void NetplaySession::SetInputDelay(int frames)
 {
-    if (frames < 1 || frames > NETPLAY_MAX_DELAY)
+    if (frames < 0 || frames > NETPLAY_MAX_DELAY)
     {
         return;
     }
@@ -248,7 +250,7 @@ bool NetplaySession::IsPlaying()
 //   NETPLAY=host            host on the default port (NETPLAY=host:27500 for another)
 //   NETPLAY=join:<address>  join a host (192.168.1.20, or 192.168.1.20:27500)
 //   NETPLAY_PLAYERS=2       host: start the game once this many players are in and ready
-//   NETPLAY_NAME, NETPLAY_DELAY  this machine's player name, the input delay (host)
+//   NETPLAY_NAME, NETPLAY_DELAY  this machine's player name, the input delay (host: frames or "auto")
 // Read once, when the game has registered itself (its player's first frame).
 namespace
 {
@@ -274,7 +276,7 @@ void AutoSessionFromEnvironment()
     }
     if (const char* delay = std::getenv("NETPLAY_DELAY"))
     {
-        NetplaySession::SetInputDelay(std::atoi(delay));
+        NetplaySession::SetInputDelay(std::strcmp(delay, "auto") == 0 ? 0 : std::atoi(delay));
     }
     if (std::strncmp(mode, "host", 4) == 0)
     {

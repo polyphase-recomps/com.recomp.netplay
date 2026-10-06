@@ -36,8 +36,8 @@ NETPLAY_API void Leave();
 // Player settings (used by the next Host / Join).
 NETPLAY_API void SetPlayerName(const char* name);
 NETPLAY_API const char* PlayerName();
-NETPLAY_API void SetInputDelay(int frames);
-NETPLAY_API int InputDelay();
+NETPLAY_API void SetInputDelay(int frames); // 0: auto (from the round trips at the start)
+NETPLAY_API int InputDelay();              // 0 while auto, before the start
 
 // The game runs on the session's inputs (from the start until the session ends). While true
 // the game's player must take every frame from netplay_frame().

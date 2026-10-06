@@ -97,7 +97,7 @@ std::vector<std::vector<Button*>> BuildRows(Builder& b, Widget* column, bool wit
     Widget* delayRow = Array(b, column, "DelayRow", true, kGap, 0.0f, FullWidth(kRowH));
     Label(b, delayRow, "DelayLabel", "Input delay (frames)", FullWidth(kRowH), kFontSize, kTextColor);
     NetplayButton* delayDown = Btn(b, delayRow, "DelayDown", "-", "delay-", At(0, 0, 44, kRowH));
-    if (Text* value = Label(b, delayRow, "DelayValue", "2", At(0, 0, 44, kRowH), kFontSize, kHeaderColor))
+    if (Text* value = Label(b, delayRow, "DelayValue", "Auto", At(0, 0, 44, kRowH), kFontSize, kHeaderColor))
     {
         value->SetHorizontalJustification(Justification::Center);
     }

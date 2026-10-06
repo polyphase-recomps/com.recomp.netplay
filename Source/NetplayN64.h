@@ -24,12 +24,20 @@
 
 #include "NetplaySession.h"
 
+#include <chrono>
 #include <cstdio>
 #include <string>
 
 namespace NetplayN64
 {
 const float kFrameTime = 1.0f / 60.0f;
+// How long a tick may wait for a late input before giving the frame up (the engine's frame is
+// 16.7 ms: a short wait still shows the frame on time, a skipped one is a visible hitch).
+inline int& WaitBudgetMs()
+{
+    static int sMs = 10;
+    return sMs;
+}
 
 // this machine's own save (Configure) and whether a session was playing (RunFrames)
 inline std::string& OwnSave()
@@ -139,7 +147,8 @@ int RunFrames(float deltaTime, const PortPad& local, Reboot reboot, AfterFrame a
     {
         accumulator = 0.25f;
     }
-    const int pending = (int)(accumulator / kFrameTime);
+    const auto tickStart = std::chrono::steady_clock::now();
+    n64_set_skip_draw(0); // every frame is drawn (see below)
     int ran = 0;
     for (; ran < maxFrames && accumulator >= kFrameTime; ran++)
     {
@@ -154,7 +163,17 @@ int RunFrames(float deltaTime, const PortPad& local, Reboot reboot, AfterFrame a
         pad.axis[1] = local.stick_y;
         if (!netplay_frame(np, &pad, out, &mask))
         {
-            break; // waiting for another player's input
+            // another player's input is late: wait for it a little (it usually comes within a few
+            // ms) rather than skip the whole frame
+            const int waited = (int)std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - tickStart).count();
+            if (ran > 0 || waited >= WaitBudgetMs() || !NetplaySession::IsPlaying())
+            {
+                break;
+            }
+            netplay_wait(np, WaitBudgetMs() - waited);
+            ran--; // try this frame again
+            continue;
         }
         for (int port = 0; port < NETPLAY_MAX_PLAYERS; port++)
         {
@@ -165,8 +184,9 @@ int RunFrames(float deltaTime, const PortPad& local, Reboot reboot, AfterFrame a
             p.connected = (unsigned char)((mask >> port) & 1u);
             n64_set_pad(port, &p);
         }
-        // Catching up draws only the last frame, but always the frames whose picture is hashed.
-        n64_set_skip_draw(ran + 1 < pending && ran + 1 < maxFrames && !hashed);
+        // Every frame is drawn, also when catching up: a game can build its picture on the last one
+        // (fades) or read its framebuffer, so a skipped draw made the hashed picture (and maybe
+        // the game) depend on timing: a false desync when one machine caught up and another not.
         n64_run_frame();
         accumulator -= kFrameTime;
 
@@ -180,7 +200,6 @@ int RunFrames(float deltaTime, const PortPad& local, Reboot reboot, AfterFrame a
         netplay_frame_done(np, hash);
         afterFrame();
     }
-    n64_set_skip_draw(0);
     if (accumulator > kFrameTime * 2)
     {
         accumulator = kFrameTime * 2; // waiting: do not bank time to rush through later

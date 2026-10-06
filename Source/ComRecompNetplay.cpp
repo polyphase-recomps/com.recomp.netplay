@@ -315,7 +315,7 @@ static void DrawWindow(void*)
             NetplaySession::SetPlayerName(name);
         }
         int delay = NetplaySession::InputDelay();
-        if (ImGui::SliderInt("Input delay (frames)", &delay, 1, 8))
+        if (ImGui::SliderInt("Input delay (frames)", &delay, 0, 8, delay == 0 ? "auto" : "%d"))
         {
             NetplaySession::SetInputDelay(delay);
         }
@@ -421,7 +421,7 @@ static void DrawWindow(void*)
     if (state == NETPLAY_LOBBY)
     {
         int delay = netplay_input_delay(np);
-        if (ImGui::SliderInt("Input delay (frames)", &delay, 1, 8))
+        if (ImGui::SliderInt("Input delay (frames)", &delay, 0, 8, delay == 0 ? "auto" : "%d"))
         {
             NetplaySession::SetInputDelay(delay);
         }

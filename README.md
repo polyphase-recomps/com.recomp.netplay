@@ -10,9 +10,16 @@ machines play in the same session.
 deterministic: their clocks come from the frame counter, and the same code computes the same
 results on every machine. So the machines only exchange controller input.
 - Frame N runs once every player's input for frame N is known.
-- Each player's input is scheduled *input delay* frames ahead, which hides the network latency:
-  2 frames on a LAN, about ping / 16 + 1 over the internet.
+- Each player's input is scheduled *input delay* frames ahead, which hides the network latency.
+  **Auto** (the default) picks it when the game starts, from the round trips measured in the
+  lobby: their average plus twice their jitter, or their recent peak if higher, plus 8 ms. In
+  practice that is 2 frames on a wired LAN and 3 on typical Wi-Fi (more on a spiky link).
 - A late packet makes the game wait a moment. Nothing is guessed, so nothing is ever rolled back.
+  The player waits for it within the tick (up to 10 ms) rather than giving the whole frame up,
+  so a slightly late input costs nothing visible.
+- **The network thread:** packets are received and answered as they arrive, on a thread of their
+  own, not once per game frame. A host passes a client's input on to the others at once. Polling
+  per frame used to add up to a frame at each machine, which over Wi-Fi meant stalls.
 
 **Topology.** One host and up to 3 clients, each client connected to the host only (a star).
 - The host collects everyone's input and sends each completed frame (all four controller ports)
@@ -50,7 +57,8 @@ knows which game this machine plays.
   - type the host's address (`192.168.1.20`, or `host:port` for a non-default port), or tick
     **Search the LAN** and pick a session;
   - wait for the host to start.
-- **Input delay:** the host's setting counts. Use 2 on a LAN.
+- **Input delay:** the host's setting counts. Leave it on **Auto**; set a number (the - button
+  below 1 goes back to Auto) only to force one.
 - **Over the internet:** the host forwards its UDP port on its router. IPv4 only for now.
 
 **The in-game netplay menu: Tools > Recomp > UI > Generate Network Scene...**
@@ -113,7 +121,7 @@ read once, when the game starts:
 | `NETPLAY=host` | Host on the default port (`host:27500` for another). |
 | `NETPLAY=join:<address>` | Join a host (`join:192.168.1.20`, or `join:192.168.1.20:27500`). |
 | `NETPLAY_PLAYERS=2` | Host: starts the game once this many players are in and ready (default 2). |
-| `NETPLAY_NAME`, `NETPLAY_DELAY` | This machine's player name, and the input delay (host). |
+| `NETPLAY_NAME`, `NETPLAY_DELAY` | This machine's player name, and the input delay (host: frames, or `auto`, the default). |
 
 The `Netplay` Lua table does the same, for a game's own menus. `Hosts()` and `Players()` return
 arrays of tables.
@@ -134,7 +142,7 @@ arrays of tables.
 | `Netplay.LocalPlayer()` | This machine's player number (1-4). |
 | `Netplay.Frame()` | The next frame to run. |
 | `Netplay.SetName(name)` | This machine's player name. |
-| `Netplay.SetDelay(frames)` / `Netplay.Delay()` | The input delay. |
+| `Netplay.SetDelay(frames)` / `Netplay.Delay()` | The input delay (0: auto; `Delay()` is 0 while auto, before the start). |
 | `Netplay.DefaultPort()` | The default UDP port (27464). |
 
 ## Adding it to a game
@@ -204,7 +212,11 @@ cmake -S Tests -B build/tests && cmake --build build/tests
     game, each fuzzing its own controller port. Their `--dump` frames and final hashes must match.
   - **`netplay_player`:** the game-player side (`NetplaySession` + `NetplayN64.h`) driven by a
     60 Hz tick. It boots alone, then hosts or joins, reboots on start, and runs with the desync
-    check on.
+    check on. Timing options: `--realtime` ticks at 60 Hz with the real frame time, as the engine,
+    and prints the speed the session played at; `--lag ms[,jitter]` holds this machine's packets
+    back (a slow or Wi-Fi link); `--delay N` (0: auto); `--nobg` / `--nowait` turn the network
+    thread / the in-tick wait off (the behavior before them).
+- **`netplay_selftest [loss%] [port] [bg]`:** `bg` 1 runs every machine on its network thread.
 
 ```
 netplay_n64 --rom ssb64.z64 --host 27464 --players 2 --frames 3000 --dump d1 --fuzz 1
@@ -224,11 +236,25 @@ netplay_n64 --rom ssb64.z64 --join 192.168.1.20 --frames 3000 --dump d2 --fuzz 2
   60 frames, the same final picture.
 - **LAN discovery:** a Windows search finds the Linux host on 27464.
 
+- **Slowdown over a slow link** (`netplay_player --realtime`, two machines on one PC, SSB):
+
+  | Link (each way) | Before (delay 2, no thread, no wait) | Now, delay 2 | Now, auto |
+  |---|---|---|---|
+  | 5 ms + 0..10 ms jitter (Wi-Fi) | 57.8 fps (96%) | 60 fps | 60 fps, delay 3, no waits |
+  | 10 ms + 0..25 ms jitter (bad Wi-Fi) | 40.4 fps (67%) | 58.1 fps (97%) | 60 fps, delay 5, no waits |
+  | none (LAN) | 60 fps | 60 fps | 60 fps, delay 2 |
+
+- **Self-test with the network thread** (`bg` 1) and without: passes on Windows (MSVC) and Linux
+  (GCC) at 0, 20 and 40% loss.
+
 macOS uses the same POSIX code as Linux but hasn't been run yet.
 
 ## Not yet
 
-- **Rollback:** it needs save states, and the runtimes keep game threads on native stacks.
+- **Rollback:** it needs save states of the whole game (RDRAM, the runtime's OS state, audio, and
+  the game threads' fiber stacks), taken every frame and restored in the same process, and the
+  game re-run several frames per tick. Possible for recompiled games on PC; not for the decomp
+  console builds.
 - **Spectators and joining a game in progress.**
 - **IPv6.**
 - **Consoles (Wii, 3DS) as peers:** the engine's network layer has sockets for them, but the

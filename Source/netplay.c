@@ -30,6 +30,9 @@ typedef SOCKET np_socket;
 typedef int np_socket;
 #define NP_BAD_SOCKET (-1)
 #define np_close close
+#include <pthread.h>
+#include <sys/select.h>
+#include <sys/time.h>
 #endif
 
 #include "netplay.h"
@@ -47,6 +50,10 @@ typedef int np_socket;
 #define RESEND_MS 20       /* unacknowledged input is sent again this often */
 #define LOBBY_MS 250       /* lobby keepalive / roster */
 #define SEARCH_MS 1000
+#define AUTO_DELAY_MARGIN_MS 8 /* auto input delay: on top of the round trip and its jitter */
+#define AUTO_DELAY_MIN 2
+#define AUTO_DELAY_MAX 8
+#define BACKGROUND_WAIT_MS 2 /* the network thread looks at the socket at least this often */
 
 enum
 {
@@ -87,6 +94,8 @@ typedef struct Peer
     uint32_t echo_t;     /* their last t, to echo */
     uint64_t echo_at;    /* when it arrived */
     int rtt;             /* -1 unknown */
+    int rtt_dev;         /* its mean deviation (jitter) */
+    int rtt_peak;        /* the highest recent round trip (decays slowly): Wi-Fi spikes */
     int32_t input_ack;   /* host: their input known up to here (contiguous) */
     int32_t frames_acked;/* host: they have the completed frames up to here */
     int32_t hash_frame[HASH_SLOTS];
@@ -132,6 +141,20 @@ struct Netplay
     int32_t desync_frame;
     uint32_t stalls;
     int dirty; /* something new to send */
+    uint32_t recv_seq; /* packets received (netplay_wait) */
+
+    /* netplay_set_background: a thread receives and answers as packets arrive */
+#if defined(_WIN32)
+    CRITICAL_SECTION lock;
+    CONDITION_VARIABLE received;
+    HANDLE bg_thread;
+#else
+    pthread_mutex_t lock;
+    pthread_cond_t received;
+    pthread_t bg_thread;
+#endif
+    int bg_running;
+    volatile int bg_quit;
 
     uint64_t last_lobby_send;
     int searching;
@@ -142,14 +165,38 @@ struct Netplay
 
     int loss;
     uint32_t loss_rng;
+    int lag_ms, lag_jitter_ms;  /* netplay_debug_set_lag: outgoing packets held back */
+    struct Lagged *lagged;
+    int lagged_count, lagged_cap;
     char status[160];
 };
+
+typedef struct Lagged
+{
+    uint64_t due;
+    struct sockaddr_in addr;
+    size_t n;
+    uint8_t buf[1400];
+} Lagged;
+
+static void np_lock(const Netplay *np);
+static void np_unlock(const Netplay *np);
 
 /* ---- platform -------------------------------------------------------------------------- */
 static uint64_t now_ms(void)
 {
 #if defined(_WIN32)
-    return GetTickCount64();
+    /* not GetTickCount64: it moves in ~15.6 ms steps (round trips read 0 or 16 ms) */
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER count;
+
+    if (freq.QuadPart == 0)
+    {
+        QueryPerformanceFrequency(&freq);
+    }
+    QueryPerformanceCounter(&count);
+    return (uint64_t)(count.QuadPart / freq.QuadPart) * 1000u +
+           (uint64_t)((count.QuadPart % freq.QuadPart) * 1000 / freq.QuadPart);
 #else
     struct timespec ts;
 
@@ -399,7 +446,66 @@ static void send_to(Netplay *np, const W *w, const struct sockaddr_in *addr)
             return;
         }
     }
+    if (np->lag_ms > 0 || np->lag_jitter_ms > 0)
+    {
+        Lagged *l;
+
+        if (np->lagged_count == np->lagged_cap)
+        {
+            int cap = np->lagged_cap ? np->lagged_cap * 2 : 64;
+            Lagged *grown = (Lagged *)realloc(np->lagged, (size_t)cap * sizeof(Lagged));
+
+            if (grown == NULL)
+            {
+                return;
+            }
+            np->lagged = grown;
+            np->lagged_cap = cap;
+        }
+        np->loss_rng = np->loss_rng * 1103515245u + 12345u;
+        l = &np->lagged[np->lagged_count++];
+        l->due = now_ms() + (uint64_t)np->lag_ms +
+                 (np->lag_jitter_ms > 0 ? (uint64_t)((np->loss_rng >> 16) % (uint32_t)(np->lag_jitter_ms + 1)) : 0);
+        l->addr = *addr;
+        l->n = w->n;
+        memcpy(l->buf, w->buf, w->n);
+        return;
+    }
     sendto(np->sock, (const char *)w->buf, (int)w->n, 0, (const struct sockaddr *)addr, sizeof(*addr));
+}
+
+/* netplay_debug_set_lag: sends the held-back packets that are due */
+static void send_lagged(Netplay *np)
+{
+    uint64_t now;
+    int i, kept = 0;
+
+    if (np->lagged_count == 0)
+    {
+        return;
+    }
+    now = now_ms();
+    for (i = 0; i < np->lagged_count; i++)
+    {
+        Lagged *l = &np->lagged[i];
+
+        if (l->due <= now)
+        {
+            if (np->sock != NP_BAD_SOCKET)
+            {
+                sendto(np->sock, (const char *)l->buf, (int)l->n, 0, (const struct sockaddr *)&l->addr, sizeof(l->addr));
+            }
+        }
+        else
+        {
+            if (kept != i)
+            {
+                np->lagged[kept] = *l;
+            }
+            kept++;
+        }
+    }
+    np->lagged_count = kept;
 }
 
 static void send_peer(Netplay *np, W *w, Peer *peer)
@@ -716,7 +822,19 @@ static void note_timing(Peer *p, uint32_t t, uint32_t echo, uint32_t hold)
 
         if (rtt >= 0 && rtt < 10000)
         {
-            p->rtt = p->rtt < 0 ? rtt : (p->rtt * 7 + rtt) / 8;
+            p->rtt_peak = rtt > p->rtt_peak ? rtt : p->rtt_peak - (p->rtt_peak - rtt) / 16;
+            if (p->rtt < 0)
+            {
+                p->rtt = rtt;
+                p->rtt_dev = 0;
+            }
+            else
+            {
+                const int dev = rtt > p->rtt ? rtt - p->rtt : p->rtt - rtt;
+
+                p->rtt_dev = (p->rtt_dev * 3 + dev) / 4;
+                p->rtt = (p->rtt * 7 + rtt) / 8;
+            }
         }
     }
 }
@@ -841,6 +959,8 @@ static void on_hello(Netplay *np, R *r, const struct sockaddr_in *from, uint32_t
                 p->port = i;
                 p->connected = 1;
                 p->rtt = -1;
+                p->rtt_dev = 0;
+                p->rtt_peak = 0;
                 snprintf(p->name, sizeof(p->name), "%s", name);
                 if (strcmp(flavor, np->flavor) != 0)
                 {
@@ -1134,6 +1254,7 @@ static void receive_all(Netplay *np)
             break;
 #endif
         }
+        np->recv_seq++;
         if (n < 24 || memcmp(buf, "NPLY", 4) != 0)
         {
             continue;
@@ -1299,6 +1420,7 @@ static void tick(Netplay *np)
     uint64_t now = now_ms();
     int i;
 
+    send_lagged(np);
     if (np->searching && now - np->last_discover >= SEARCH_MS)
     {
         np->last_discover = now;
@@ -1451,12 +1573,27 @@ Netplay *netplay_create(const NetplayConfig *config)
         machine_name(np->player_name, sizeof(np->player_name));
     }
     np->max_players = (config && config->max_players >= 2 && config->max_players <= NETPLAY_MAX_PLAYERS) ? config->max_players : NETPLAY_MAX_PLAYERS;
-    np->delay = (config && config->input_delay >= 1 && config->input_delay <= NETPLAY_MAX_DELAY) ? config->input_delay : 2;
+    /* 0: auto (from the players' round trips, at the start) */
+    np->delay = (config && config->input_delay >= 1 && config->input_delay <= NETPLAY_MAX_DELAY) ? config->input_delay : 0;
     np->timeout_ms = (config && config->timeout_ms > 0) ? config->timeout_ms : 5000;
     np->sock = NP_BAD_SOCKET;
     np->local_port = -1;
     np->desync_frame = -1;
     np->state = NETPLAY_IDLE;
+#if defined(_WIN32)
+    InitializeCriticalSection(&np->lock);
+    InitializeConditionVariable(&np->received);
+#else
+    {
+        pthread_mutexattr_t attr;
+
+        pthread_mutexattr_init(&attr);
+        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+        pthread_mutex_init(&np->lock, &attr);
+        pthread_mutexattr_destroy(&attr);
+        pthread_cond_init(&np->received, NULL);
+    }
+#endif
     return np;
 }
 
@@ -1480,7 +1617,7 @@ static void say_goodbye(Netplay *np)
     }
 }
 
-void netplay_stop(Netplay *np)
+static void netplay_stop_unlocked(Netplay *np)
 {
     if (np == NULL)
     {
@@ -1515,16 +1652,24 @@ void netplay_destroy(Netplay *np)
     {
         return;
     }
+    netplay_set_background(np, 0);
     np->searching = 0;
     netplay_stop(np);
     if (np->sock != NP_BAD_SOCKET)
     {
         np_close(np->sock);
     }
+#if defined(_WIN32)
+    DeleteCriticalSection(&np->lock);
+#else
+    pthread_cond_destroy(&np->received);
+    pthread_mutex_destroy(&np->lock);
+#endif
+    free(np->lagged);
     free(np);
 }
 
-int netplay_host(Netplay *np, int udp_port)
+static int netplay_host_unlocked(Netplay *np, int udp_port)
 {
     netplay_stop(np);
     if (np->sock != NP_BAD_SOCKET)
@@ -1549,7 +1694,7 @@ int netplay_host(Netplay *np, int udp_port)
     return 1;
 }
 
-int netplay_join(Netplay *np, const char *address)
+static int netplay_join_unlocked(Netplay *np, const char *address)
 {
     struct sockaddr_in addr;
     int searching = np->searching;
@@ -1583,7 +1728,7 @@ int netplay_join(Netplay *np, const char *address)
     return 1;
 }
 
-void netplay_set_save(Netplay *np, const void *data, size_t size)
+static void netplay_set_save_unlocked(Netplay *np, const void *data, size_t size)
 {
     if (!np->is_host || np->state != NETPLAY_LOBBY || size > NETPLAY_MAX_SAVE)
     {
@@ -1600,7 +1745,30 @@ void netplay_set_save(Netplay *np, const void *data, size_t size)
     np->save_crc = crc32_of(np->save, np->save_size);
 }
 
-int netplay_start(Netplay *np)
+/* The input delay that keeps the slowest link from stalling: a client's input reaches the host,
+   and the frame it completes comes back, within the delay (the round trip + 2x its jitter, or its
+   recent peak if higher, + a margin). */
+static int auto_delay(const Netplay *np)
+{
+    int i, need = 0, delay;
+
+    for (i = 1; i < NETPLAY_MAX_PLAYERS; i++)
+    {
+        const Peer *p = &np->peers[i];
+
+        if (p->used && p->connected)
+        {
+            int ms = p->rtt < 0 ? 50 : p->rtt + 2 * p->rtt_dev;
+
+            ms = (p->rtt_peak > ms ? p->rtt_peak : ms) + AUTO_DELAY_MARGIN_MS;
+            need = ms > need ? ms : need;
+        }
+    }
+    delay = (need * 60 + 999) / 1000; /* frames of 1/60 s, rounded up */
+    return delay < AUTO_DELAY_MIN ? AUTO_DELAY_MIN : delay > AUTO_DELAY_MAX ? AUTO_DELAY_MAX : delay;
+}
+
+static int netplay_start_unlocked(Netplay *np)
 {
     int i, clients = 0;
     unsigned mask = 1u << np->local_port;
@@ -1625,7 +1793,7 @@ int netplay_start(Netplay *np)
     {
         return 0;
     }
-    start_running(np, (uint32_t)now_ms() | 1u, np->delay, mask);
+    start_running(np, (uint32_t)now_ms() | 1u, np->delay >= 1 ? np->delay : auto_delay(np), mask);
     for (i = 1; i < NETPLAY_MAX_PLAYERS; i++)
     {
         if (np->peers[i].used)
@@ -1636,7 +1804,7 @@ int netplay_start(Netplay *np)
     return 1;
 }
 
-void netplay_poll(Netplay *np)
+static void netplay_poll_unlocked(Netplay *np)
 {
     if (np == NULL)
     {
@@ -1646,7 +1814,7 @@ void netplay_poll(Netplay *np)
     tick(np);
 }
 
-void netplay_search(Netplay *np, int enable)
+static void netplay_search_unlocked(Netplay *np, int enable)
 {
     np->searching = enable != 0;
     if (enable && np->sock == NP_BAD_SOCKET)
@@ -1659,7 +1827,7 @@ void netplay_search(Netplay *np, int enable)
     }
 }
 
-int netplay_found(Netplay *np, NetplayFoundHost *out, int max)
+static int netplay_found_unlocked(Netplay *np, NetplayFoundHost *out, int max)
 {
     int i;
 
@@ -1670,7 +1838,7 @@ int netplay_found(Netplay *np, NetplayFoundHost *out, int max)
     return i;
 }
 
-int netplay_take_start(Netplay *np)
+static int netplay_take_start_unlocked(Netplay *np)
 {
     int pending = np->start_pending;
 
@@ -1678,7 +1846,7 @@ int netplay_take_start(Netplay *np)
     return pending;
 }
 
-const uint8_t *netplay_save(Netplay *np, size_t *size)
+static const uint8_t *netplay_save_unlocked(Netplay *np, size_t *size)
 {
     int have = np->is_host || np->state == NETPLAY_READY || np->state == NETPLAY_RUNNING;
 
@@ -1686,7 +1854,7 @@ const uint8_t *netplay_save(Netplay *np, size_t *size)
     return have ? np->save : NULL;
 }
 
-int netplay_frame(Netplay *np, const NetplayPad *local, NetplayPad out[NETPLAY_MAX_PLAYERS], unsigned *out_mask)
+static int netplay_frame_unlocked(Netplay *np, const NetplayPad *local, NetplayPad out[NETPLAY_MAX_PLAYERS], unsigned *out_mask)
 {
     int32_t f, record;
     int s, p;
@@ -1747,7 +1915,7 @@ int netplay_frame(Netplay *np, const NetplayPad *local, NetplayPad out[NETPLAY_M
     return 1;
 }
 
-void netplay_frame_done(Netplay *np, uint64_t state_hash)
+static void netplay_frame_done_unlocked(Netplay *np, uint64_t state_hash)
 {
     int32_t frame = np->cur_frame - 1;
     int s, i;
@@ -1786,15 +1954,15 @@ int netplay_current_frame(const Netplay *np) { return np ? np->cur_frame : 0; }
 int netplay_peer_flavor_differs(const Netplay *np) { return np && np->flavor_differs; }
 uint32_t netplay_stall_count(const Netplay *np) { return np ? np->stalls : 0; }
 
-void netplay_set_input_delay(Netplay *np, int frames)
+static void netplay_set_input_delay_unlocked(Netplay *np, int frames)
 {
-    if (np->is_host && np->state == NETPLAY_LOBBY && frames >= 1 && frames <= NETPLAY_MAX_DELAY)
+    if (np->is_host && np->state == NETPLAY_LOBBY && frames >= 0 && frames <= NETPLAY_MAX_DELAY)
     {
         np->delay = frames;
     }
 }
 
-int netplay_players(const Netplay *np, NetplayPlayerInfo *out, int max)
+static int netplay_players_unlocked(const Netplay *np, NetplayPlayerInfo *out, int max)
 {
     int n = 0, i;
 
@@ -1840,7 +2008,7 @@ int netplay_players(const Netplay *np, NetplayPlayerInfo *out, int max)
     return n;
 }
 
-const char *netplay_status_text(const Netplay *np)
+static const char *netplay_status_text_unlocked(const Netplay *np)
 {
     Netplay *m = (Netplay *)np;
     int i, players = 1;
@@ -1855,7 +2023,15 @@ const char *netplay_status_text(const Netplay *np)
         {
             players += np->peers[i].used;
         }
-        snprintf(m->status, sizeof(m->status), "Hosting: %d/%d players, input delay %d", players, np->max_players, np->delay);
+        if (np->delay >= 1)
+        {
+            snprintf(m->status, sizeof(m->status), "Hosting: %d/%d players, input delay %d", players, np->max_players, np->delay);
+        }
+        else
+        {
+            snprintf(m->status, sizeof(m->status), "Hosting: %d/%d players, input delay auto (%d now)", players,
+                     np->max_players, auto_delay(np));
+        }
         break;
     case NETPLAY_JOINING:
         snprintf(m->status, sizeof(m->status), "Joining...");
@@ -1886,8 +2062,328 @@ const char *netplay_status_text(const Netplay *np)
     return np->status;
 }
 
+void netplay_debug_set_lag(Netplay *np, int ms, int jitter_ms)
+{
+    np_lock(np);
+    np->lag_ms = ms < 0 ? 0 : ms;
+    np->lag_jitter_ms = jitter_ms < 0 ? 0 : jitter_ms;
+    np_unlock(np);
+}
+
 void netplay_debug_set_loss(Netplay *np, int percent, uint32_t seed)
 {
     np->loss = percent < 0 ? 0 : percent > 100 ? 100 : percent;
     np->loss_rng = seed ? seed : 1;
+}
+
+/* ---- thread safety and the background network thread ------------------------------------------
+   Every call below holds the session's lock, so the network thread (netplay_set_background) and
+   the game can use the session at the same time. The lock is recursive (calls nest). */
+static void np_lock(const Netplay *np)
+{
+#if defined(_WIN32)
+    EnterCriticalSection((CRITICAL_SECTION *)&np->lock);
+#else
+    pthread_mutex_lock((pthread_mutex_t *)&np->lock);
+#endif
+}
+
+static void np_unlock(const Netplay *np)
+{
+#if defined(_WIN32)
+    LeaveCriticalSection((CRITICAL_SECTION *)&np->lock);
+#else
+    pthread_mutex_unlock((pthread_mutex_t *)&np->lock);
+#endif
+}
+
+void netplay_stop(Netplay *np)
+{
+    np_lock(np);
+    netplay_stop_unlocked(np);
+    np_unlock(np);
+}
+
+int netplay_host(Netplay *np, int udp_port)
+{
+    int r;
+
+    np_lock(np);
+    r = netplay_host_unlocked(np, udp_port);
+    np_unlock(np);
+    return r;
+}
+
+int netplay_join(Netplay *np, const char *address)
+{
+    int r;
+
+    np_lock(np);
+    r = netplay_join_unlocked(np, address);
+    np_unlock(np);
+    return r;
+}
+
+void netplay_set_save(Netplay *np, const void *data, size_t size)
+{
+    np_lock(np);
+    netplay_set_save_unlocked(np, data, size);
+    np_unlock(np);
+}
+
+int netplay_start(Netplay *np)
+{
+    int r;
+
+    np_lock(np);
+    r = netplay_start_unlocked(np);
+    np_unlock(np);
+    return r;
+}
+
+void netplay_poll(Netplay *np)
+{
+    if (np == NULL)
+    {
+        return;
+    }
+    np_lock(np);
+    netplay_poll_unlocked(np);
+    np_unlock(np);
+}
+
+void netplay_search(Netplay *np, int enable)
+{
+    np_lock(np);
+    netplay_search_unlocked(np, enable);
+    np_unlock(np);
+}
+
+int netplay_found(Netplay *np, NetplayFoundHost *out, int max)
+{
+    int r;
+
+    np_lock(np);
+    r = netplay_found_unlocked(np, out, max);
+    np_unlock(np);
+    return r;
+}
+
+int netplay_take_start(Netplay *np)
+{
+    int r;
+
+    np_lock(np);
+    r = netplay_take_start_unlocked(np);
+    np_unlock(np);
+    return r;
+}
+
+const uint8_t *netplay_save(Netplay *np, size_t *size)
+{
+    const uint8_t *r;
+
+    np_lock(np);
+    r = netplay_save_unlocked(np, size);
+    np_unlock(np);
+    return r;
+}
+
+int netplay_frame(Netplay *np, const NetplayPad *local, NetplayPad out[NETPLAY_MAX_PLAYERS], unsigned *out_mask)
+{
+    int r;
+
+    np_lock(np);
+    r = netplay_frame_unlocked(np, local, out, out_mask);
+    np_unlock(np);
+    return r;
+}
+
+void netplay_frame_done(Netplay *np, uint64_t state_hash)
+{
+    np_lock(np);
+    netplay_frame_done_unlocked(np, state_hash);
+    np_unlock(np);
+}
+
+void netplay_set_input_delay(Netplay *np, int frames)
+{
+    np_lock(np);
+    netplay_set_input_delay_unlocked(np, frames);
+    np_unlock(np);
+}
+
+int netplay_players(const Netplay *np, NetplayPlayerInfo *out, int max)
+{
+    int r;
+
+    np_lock(np);
+    r = netplay_players_unlocked(np, out, max);
+    np_unlock(np);
+    return r;
+}
+
+const char *netplay_status_text(const Netplay *np)
+{
+    const char *r;
+
+    np_lock(np);
+    r = netplay_status_text_unlocked(np);
+    np_unlock(np);
+    return r;
+}
+
+/* Waits up to ms for the socket to have something to read; >0: it has. */
+static int wait_readable(np_socket s, int ms)
+{
+    fd_set set;
+    struct timeval tv;
+
+    FD_ZERO(&set);
+    FD_SET(s, &set);
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    return select((int)s + 1, &set, NULL, NULL, &tv);
+}
+
+static void sleep_ms(int ms)
+{
+#if defined(_WIN32)
+    Sleep((DWORD)ms);
+#else
+    struct timespec ts;
+
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+    nanosleep(&ts, NULL);
+#endif
+}
+
+/* The network thread: receives as packets arrive and answers at once (a host passes a client's
+   input on to the others then, not at its next game frame), and wakes netplay_wait. */
+static void background_loop(Netplay *np)
+{
+    while (!np->bg_quit)
+    {
+        np_socket s;
+        uint32_t before;
+
+        np_lock(np);
+        s = np->sock;
+        np_unlock(np);
+        if (s == NP_BAD_SOCKET)
+        {
+            sleep_ms(BACKGROUND_WAIT_MS);
+            continue;
+        }
+        if (wait_readable(s, BACKGROUND_WAIT_MS) < 0)
+        {
+            sleep_ms(1); /* the socket was just closed (stop / host / join) */
+        }
+        np_lock(np);
+        before = np->recv_seq;
+        receive_all(np);
+        tick(np);
+        if (np->recv_seq != before)
+        {
+#if defined(_WIN32)
+            WakeAllConditionVariable(&np->received);
+#else
+            pthread_cond_broadcast(&np->received);
+#endif
+        }
+        np_unlock(np);
+    }
+}
+
+#if defined(_WIN32)
+static DWORD WINAPI background_main(LPVOID arg)
+{
+    background_loop((Netplay *)arg);
+    return 0;
+}
+#else
+static void *background_main(void *arg)
+{
+    background_loop((Netplay *)arg);
+    return NULL;
+}
+#endif
+
+void netplay_set_background(Netplay *np, int enable)
+{
+    if (np == NULL || (enable != 0) == (np->bg_running != 0))
+    {
+        return;
+    }
+    if (enable)
+    {
+        np->bg_quit = 0;
+#if defined(_WIN32)
+        np->bg_thread = CreateThread(NULL, 0, background_main, np, 0, NULL);
+        np->bg_running = np->bg_thread != NULL;
+#else
+        np->bg_running = pthread_create(&np->bg_thread, NULL, background_main, np) == 0;
+#endif
+        return;
+    }
+    np->bg_quit = 1;
+#if defined(_WIN32)
+    WaitForSingleObject(np->bg_thread, INFINITE);
+    CloseHandle(np->bg_thread);
+    np->bg_thread = NULL;
+#else
+    pthread_join(np->bg_thread, NULL);
+#endif
+    np->bg_running = 0;
+}
+
+int netplay_wait(Netplay *np, int timeout_ms)
+{
+    uint32_t before;
+    int got;
+
+    if (np == NULL || timeout_ms <= 0)
+    {
+        return 0;
+    }
+    if (!np->bg_running)
+    {
+        np_socket s;
+
+        np_lock(np);
+        s = np->sock;
+        np_unlock(np);
+        if (s == NP_BAD_SOCKET)
+        {
+            sleep_ms(timeout_ms);
+            return 0;
+        }
+        got = wait_readable(s, timeout_ms) > 0;
+        netplay_poll(np);
+        return got;
+    }
+    np_lock(np);
+    before = np->recv_seq;
+#if defined(_WIN32)
+    SleepConditionVariableCS(&np->received, &np->lock, (DWORD)timeout_ms);
+#else
+    {
+        struct timeval now;
+        struct timespec until;
+
+        gettimeofday(&now, NULL);
+        until.tv_sec = now.tv_sec + timeout_ms / 1000;
+        until.tv_nsec = (long)now.tv_usec * 1000L + (long)(timeout_ms % 1000) * 1000000L;
+        if (until.tv_nsec >= 1000000000L)
+        {
+            until.tv_sec++;
+            until.tv_nsec -= 1000000000L;
+        }
+        pthread_cond_timedwait(&np->received, &np->lock, &until);
+    }
+#endif
+    got = np->recv_seq != before;
+    np_unlock(np);
+    return got;
 }

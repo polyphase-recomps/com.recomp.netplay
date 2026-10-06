@@ -86,7 +86,7 @@ typedef struct NetplayConfig
     const char *flavor;       /* <= 15 chars */
     const char *player_name;  /* <= 31 chars; empty: the machine's name */
     int max_players;          /* host: 2..4 (0: 4) */
-    int input_delay;          /* host: frames, 1..NETPLAY_MAX_DELAY (0: 2) */
+    int input_delay;          /* host: frames, 1..NETPLAY_MAX_DELAY (0: auto, from the round trips at the start) */
     int timeout_ms;           /* a peer silent this long is gone (0: 5000) */
 } NetplayConfig;
 
@@ -130,6 +130,14 @@ NETPLAY_API void netplay_stop(Netplay *np);
 /* Receive and send; call every engine tick (netplay_frame calls it too). */
 NETPLAY_API void netplay_poll(Netplay *np);
 
+/* A thread that receives and answers as packets arrive, instead of at the next poll / frame
+ * (a host passes a client's input on at once: less input delay needed, fewer stalls). Every call
+ * is thread-safe; the session's own state is only touched under its lock. */
+NETPLAY_API void netplay_set_background(Netplay *np, int enable);
+/* Waits up to timeout_ms for a packet (e.g. the input netplay_frame is waiting for); 1: one came.
+ * Without the background thread it also receives (netplay_poll). */
+NETPLAY_API int netplay_wait(Netplay *np, int timeout_ms);
+
 /* LAN discovery: broadcast now and every second while searching; netplay_found() lists the
  * hosts that answered (heard from in the last 3 seconds). Works while idle. */
 NETPLAY_API void netplay_search(Netplay *np, int enable);
@@ -161,7 +169,8 @@ NETPLAY_API uint32_t netplay_stall_count(const Netplay *np); /* netplay_frame ca
 /* What is going on, for a status line ("Waiting for players (2/4)", "Desync at frame 1200", ...) */
 NETPLAY_API const char *netplay_status_text(const Netplay *np);
 
-/* Host: change the input delay before the start (1..NETPLAY_MAX_DELAY). */
+/* Host: change the input delay before the start (1..NETPLAY_MAX_DELAY; 0: auto, from the round
+ * trips and their jitter when the game starts). netplay_input_delay is 0 while auto in the lobby. */
 NETPLAY_API void netplay_set_input_delay(Netplay *np, int frames);
 
 /* 64-bit FNV-1a, for state hashes (e.g. of the frame the game drew). */
@@ -170,6 +179,8 @@ NETPLAY_API uint64_t netplay_hash(uint64_t seed, const void *data, size_t size);
 
 /* Tests: drop this share of outgoing packets (0..100), deterministically from seed. */
 NETPLAY_API void netplay_debug_set_loss(Netplay *np, int percent, uint32_t seed);
+/* Tests: hold outgoing packets back ms + 0..jitter_ms (a slow or Wi-Fi link; 0, 0: off). */
+NETPLAY_API void netplay_debug_set_lag(Netplay *np, int ms, int jitter_ms);
 
 #ifdef __cplusplus
 }

@@ -7,7 +7,8 @@
  *   3. a machine whose game state differs is caught (desync);
  *   4. a client that vanishes is dropped and the others play on, still in step.
  *
- *   netplay_selftest [loss_percent] [base_port]
+ *   netplay_selftest [loss_percent] [base_port] [bg]
+ *   bg: 1 = each machine receives on its background network thread (netplay_set_background)
  */
 #include "netplay.h"
 
@@ -237,6 +238,7 @@ int main(int argc, char **argv)
 {
     int loss = argc > 1 ? atoi(argv[1]) : 20;
     int base = argc > 2 ? atoi(argv[2]) : 27500;
+    int bg = argc > 3 ? atoi(argv[3]) : 0;
     char address[32];
     static uint8_t save[40000];
     const uint8_t *got;
@@ -256,6 +258,7 @@ int main(int argc, char **argv)
         NetplayConfig c = config(i == 0 ? "host" : i == 1 ? "client1" : "client2");
 
         sM[i].np = netplay_create(&c);
+        netplay_set_background(sM[i].np, bg);
         sM[i].alive = 1;
         sM[i].corrupt_at = -1;
         sM[i].state = NETPLAY_HASH_SEED;
@@ -316,6 +319,7 @@ int main(int argc, char **argv)
         NetplayConfig c = config(i == 0 ? "host" : "client");
 
         sM[i].np = netplay_create(&c);
+        netplay_set_background(sM[i].np, bg);
         sM[i].alive = 1;
         sM[i].corrupt_at = -1;
         sM[i].state = NETPLAY_HASH_SEED;
@@ -329,6 +333,7 @@ int main(int argc, char **argv)
     CHECK(wait_until(host_started, 5000), "start: %s", netplay_status_text(sM[0].np));
     run_session(600, 20000);
     sM[2].alive = 0; /* gone without a goodbye */
+    netplay_set_background(sM[2].np, 0); /* its network thread too */
     run_session(1500, 20000);
     CHECK(sM[0].frames == 1500 && sM[1].frames == 1500, "host and client 1 played on: %d %d (%s)", sM[0].frames,
           sM[1].frames, netplay_status_text(sM[0].np));

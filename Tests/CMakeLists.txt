@@ -16,6 +16,9 @@ target_include_directories(netplay_core PUBLIC "${NETPLAY_SOURCE}")
 if(WIN32)
     target_link_libraries(netplay_core PUBLIC ws2_32)
     target_compile_definitions(netplay_core PUBLIC _CRT_SECURE_NO_WARNINGS)
+else()
+    find_package(Threads REQUIRED) # netplay_set_background
+    target_link_libraries(netplay_core PUBLIC Threads::Threads)
 endif()
 
 add_executable(netplay_selftest netplay_selftest.c)

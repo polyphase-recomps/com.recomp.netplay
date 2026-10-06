@@ -114,3 +114,8 @@ elseif(APPLE)
 else()
     target_compile_definitions(com.recomp.netplay PRIVATE PLATFORM_LINUX=1)
 endif()
+
+if(NOT WIN32)
+    find_package(Threads REQUIRED) # netplay_set_background: the network thread
+    target_link_libraries(com.recomp.netplay PRIVATE Threads::Threads)
+endif()
