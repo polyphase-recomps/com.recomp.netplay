@@ -75,6 +75,34 @@ it are `NetplayButton` (a RecompButton with an `Action`: host, join, search, joi
 leave, delay-, delay+, close) and `NetplayMenu`, which fills the texts in by node name. Both work
 in packaged games.
 
+**In the Mods UI.** The same window's **Add Netplay to the Mods UI** button (also
+**Tools > Recomp > UI > Add Netplay to Mods UI...**) adds a **Netplay** tab and page to the
+game's Mod Settings scene. They are made the way com.recomp.mod.base makes its own
+(`Tab_Netplay` with `@page:Netplay`, and `Page_Netplay > List`), so its page switching, gamepad
+navigation and Menu Style work on them. Regenerating the Mods UI keeps them; run Add again
+afterwards so the tab strip stays wide enough.
+
+**SignalBus.** The engine's global bus, `GetSignalBus()` in C++ and `SignalBus` in Lua:
+
+| Signal | Direction | What it does |
+|---|---|---|
+| `Netplay.Open` | in | Opens the netplay menu. In the Mods UI it opens the Mods UI on its Netplay tab. Optional argument: the name of the UI's root node (`"Netplay"`, `"ModSettings"`) when a scene has several; otherwise the first one. |
+| `Netplay.Opened` | out | The netplay menu was shown. |
+| `Netplay.Closed` | out | It went away: closed, B, another Mods UI tab, or the session started (the menu closes itself then). |
+
+Both out signals carry the UI's name and the session state (`idle`, `lobby`, `ready`,
+`running`, `desync`, ...), so whoever opened the menu decides what comes next: reopen its own
+menu, or let the game run when the state is `running`. For example:
+
+```lua
+SignalBus.Subscribe("Netplay.Closed", self, function(listener, ui, state)
+    if state ~= "running" then self:ShowMainMenu() end
+end)
+SignalBus.Emit("Netplay.Open")
+```
+
+`Netplay.OpenMenu([ui])`, `Netplay.CloseMenu()` and `Netplay.IsMenuOpen()` do the same from Lua.
+
 **Packaged builds without a netplay menu** take the session from environment variables. They are
 read once, when the game starts:
 

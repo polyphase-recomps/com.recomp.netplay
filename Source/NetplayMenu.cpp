@@ -8,11 +8,15 @@
 #include "Nodes/Widgets/Button.h"
 #include "Nodes/Widgets/InputField.h"
 #include "Nodes/Widgets/Text.h"
+#include "Engine.h"
 #include "Property.h"
+#include "SignalBus.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 FORCE_LINK_DEF(NetplayButton);
 DEFINE_NODE(NetplayButton, RecompButton);
@@ -21,14 +25,36 @@ DEFINE_NODE(NetplayMenu, Widget);
 
 namespace
 {
-// The top of the UI a node is in (the generated scene's root Canvas).
-Node* UiRoot(Node* node)
+// The menu a node belongs to: the NetplayMenu among the children of its nearest ancestor that
+// has one (the scene's root for the Network scene, the Netplay page's list in the Mods UI).
+NetplayMenu* MenuOf(Node* node)
 {
-    while (node != nullptr && node->GetParent() != nullptr)
+    for (Node* n = node; n != nullptr; n = n->GetParent())
     {
-        node = node->GetParent();
+        if (Node* menu = n->FindChild("NetplayMenu", false))
+        {
+            if (NetplayMenu* m = menu->As<NetplayMenu>())
+            {
+                return m;
+            }
+        }
     }
-    return node;
+    return nullptr;
+}
+
+// Where the menu's widgets are looked up by name: the menu's parent (so names like "Note" in the
+// rest of the Mods UI are not touched).
+Node* Scope(NetplayMenu* menu, Node* from)
+{
+    if (menu != nullptr && menu->GetParent() != nullptr)
+    {
+        return menu->GetParent();
+    }
+    while (from != nullptr && from->GetParent() != nullptr)
+    {
+        from = from->GetParent();
+    }
+    return from;
 }
 
 template <class T>
@@ -106,7 +132,206 @@ const std::string& NetplayButton::GetAction() const
     return mAction;
 }
 
-// ---- NetplayMenu ---------------------------------------------------------------------
+// ---- NetplayMenu: opening / closing, SignalBus ------------------------------------------------
+namespace
+{
+std::vector<NetplayMenu*> sMenus; // started menus, oldest first
+NetplayState sLastSessionState = NETPLAY_IDLE;
+
+const char* StateName(NetplayState state)
+{
+    switch (state)
+    {
+    case NETPLAY_IDLE: return "idle";
+    case NETPLAY_LOBBY: return "lobby";
+    case NETPLAY_JOINING: return "joining";
+    case NETPLAY_SYNCING: return "syncing";
+    case NETPLAY_READY: return "ready";
+    case NETPLAY_RUNNING: return "running";
+    case NETPLAY_DESYNC: return "desync";
+    case NETPLAY_DISCONNECTED: return "disconnected";
+    case NETPLAY_ERROR: return "error";
+    }
+    return "idle";
+}
+
+// "Netplay.Open": the menu named by the first argument (its UI root's name), else the first one
+void OnOpenSignal(Node* listener, const std::vector<Datum>& args)
+{
+    NetplayMenu* menu = listener != nullptr ? listener->As<NetplayMenu>() : nullptr;
+    if (menu == nullptr || sMenus.empty())
+    {
+        return;
+    }
+    const std::string wanted =
+        (!args.empty() && args[0].GetType() == DatumType::String) ? args[0].GetString() : std::string();
+    if (wanted.empty() ? menu == sMenus.front() : menu->UiName() == wanted)
+    {
+        menu->OpenMenu();
+    }
+}
+}
+
+void NetplayMenu::Start()
+{
+    Widget::Start();
+    if (std::find(sMenus.begin(), sMenus.end(), this) == sMenus.end())
+    {
+        sMenus.push_back(this);
+    }
+    GetSignalBus()->Subscribe("Netplay.Open", this, OnOpenSignal);
+}
+
+void NetplayMenu::Stop()
+{
+    GetSignalBus()->Unsubscribe("Netplay.Open", this);
+    sMenus.erase(std::remove(sMenus.begin(), sMenus.end(), this), sMenus.end());
+    Widget::Stop();
+}
+
+void NetplayMenu::Destroy()
+{
+    GetSignalBus()->Unsubscribe("Netplay.Open", this);
+    sMenus.erase(std::remove(sMenus.begin(), sMenus.end(), this), sMenus.end());
+    Widget::Destroy();
+}
+
+std::string NetplayMenu::UiName()
+{
+    Node* n = this;
+    while (n->GetParent() != nullptr)
+    {
+        n = n->GetParent();
+    }
+    return n->GetName();
+}
+
+// In the Mods UI the menu lives on the page "Page_Netplay" (its tab shows it).
+Node* NetplayMenu::ModsPage()
+{
+    for (Node* n = GetParent(); n != nullptr; n = n->GetParent())
+    {
+        if (n->GetName() == "Page_Netplay")
+        {
+            return n;
+        }
+    }
+    return nullptr;
+}
+
+bool NetplayMenu::IsMenuOpen()
+{
+    RecompMenuController* controller = RecompMenuController::FindFor(this);
+    if (controller == nullptr || !controller->IsOpen())
+    {
+        return false;
+    }
+    Node* page = ModsPage();
+    Widget* pageWidget = page != nullptr ? page->As<Widget>() : nullptr;
+    return pageWidget == nullptr || pageWidget->IsVisible();
+}
+
+bool NetplayMenu::OpenMenu()
+{
+    RecompMenuController* controller = RecompMenuController::FindFor(this);
+    if (controller == nullptr)
+    {
+        return false;
+    }
+    controller->Open();
+    if (ModsPage() != nullptr)
+    {
+        // the Mods UI: show its Netplay page, as its tab does
+        Node* root = this;
+        while (root->GetParent() != nullptr)
+        {
+            root = root->GetParent();
+        }
+        Node* tab = root->FindChild("Tab_Netplay", true);
+        if (Button* button = tab != nullptr ? tab->As<Button>() : nullptr)
+        {
+            button->Activate();
+        }
+    }
+    return true;
+}
+
+void NetplayMenu::CloseMenu()
+{
+    if (RecompMenuController* controller = RecompMenuController::FindFor(this))
+    {
+        controller->Close();
+    }
+}
+
+bool NetplayMenu::OpenAny(const std::string& uiName)
+{
+    for (NetplayMenu* menu : sMenus)
+    {
+        if (uiName.empty() || menu->UiName() == uiName)
+        {
+            return menu->OpenMenu();
+        }
+    }
+    return false;
+}
+
+bool NetplayMenu::CloseAny()
+{
+    bool closed = false;
+    for (NetplayMenu* menu : sMenus)
+    {
+        if (menu->IsMenuOpen())
+        {
+            menu->CloseMenu();
+            closed = true;
+        }
+    }
+    return closed;
+}
+
+bool NetplayMenu::AnyOpen()
+{
+    for (NetplayMenu* menu : sMenus)
+    {
+        if (menu->IsMenuOpen())
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Every frame (the addon's tick: a closed menu doesn't tick itself). Sends "Netplay.Opened" /
+// "Netplay.Closed" when a menu shows / goes away, and closes the menus when a session starts.
+void NetplayMenu::TickAll()
+{
+    const NetplayState state = netplay_state(NetplaySession::Get());
+    const bool started = state == NETPLAY_RUNNING && sLastSessionState != NETPLAY_RUNNING;
+    sLastSessionState = state;
+
+    const std::vector<NetplayMenu*> menus = sMenus; // a handler may open / close menus
+    for (NetplayMenu* menu : menus)
+    {
+        if (std::find(sMenus.begin(), sMenus.end(), menu) == sMenus.end())
+        {
+            continue;
+        }
+        if (started && menu->IsMenuOpen())
+        {
+            menu->CloseMenu(); // the game is on: back to it
+        }
+        const bool open = menu->IsMenuOpen();
+        if (open != menu->mWasOpen)
+        {
+            menu->mWasOpen = open;
+            GetSignalBus()->Emit(open ? "Netplay.Opened" : "Netplay.Closed",
+                                 {Datum(menu->UiName()), Datum(StateName(state))});
+        }
+    }
+}
+
+// ---- NetplayMenu: contents -----------------------------------------------------------------------
 void NetplayMenu::SetNote(const std::string& note)
 {
     mNote = note;
@@ -115,8 +340,8 @@ void NetplayMenu::SetNote(const std::string& note)
 
 void NetplayMenu::RunAction(Node* from, const std::string& action)
 {
-    Node* root = UiRoot(from);
-    NetplayMenu* menu = Find<NetplayMenu>(root, "NetplayMenu");
+    NetplayMenu* menu = MenuOf(from);
+    Node* root = Scope(menu, from);
     Netplay* np = NetplaySession::Get();
     auto note = [menu](const std::string& text) {
         if (menu != nullptr)
@@ -209,7 +434,7 @@ void NetplayMenu::Tick(float deltaTime)
 {
     Widget::Tick(deltaTime);
 
-    Node* root = UiRoot(this);
+    Node* root = Scope(this, this);
     Netplay* np = NetplaySession::Get();
     const NetplayState state = netplay_state(np);
 

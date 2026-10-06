@@ -225,6 +225,26 @@ int L_DefaultPort(lua_State* L)
     Api()->Lua_pushinteger(L, NETPLAY_DEFAULT_PORT);
     return 1;
 }
+
+// The in-game menu (same as SignalBus "Netplay.Open"): Netplay.OpenMenu([uiName]) -> bool
+int L_OpenMenu(lua_State* L)
+{
+    const char* name = Api()->Lua_type(L, 1) == kLuaTString ? Api()->Lua_tostring(L, 1) : "";
+    Api()->Lua_pushboolean(L, NetplayMenu::OpenAny(name) ? 1 : 0);
+    return 1;
+}
+
+int L_CloseMenu(lua_State* L)
+{
+    Api()->Lua_pushboolean(L, NetplayMenu::CloseAny() ? 1 : 0);
+    return 1;
+}
+
+int L_IsMenuOpen(lua_State* L)
+{
+    Api()->Lua_pushboolean(L, NetplayMenu::AnyOpen() ? 1 : 0);
+    return 1;
+}
 }
 
 static void RegisterScriptFuncs(lua_State* L)
@@ -241,9 +261,10 @@ static void RegisterScriptFuncs(lua_State* L)
         {"Players", L_Players},   {"State", L_State},         {"Status", L_Status},
         {"IsHost", L_IsHost},     {"IsPlaying", L_IsPlaying}, {"LocalPlayer", L_LocalPlayer},
         {"Frame", L_Frame},       {"SetName", L_SetName},     {"SetDelay", L_SetDelay},
-        {"Delay", L_Delay},       {"DefaultPort", L_DefaultPort}, {nullptr, nullptr},
+        {"Delay", L_Delay},       {"DefaultPort", L_DefaultPort}, {"OpenMenu", L_OpenMenu},
+        {"CloseMenu", L_CloseMenu}, {"IsMenuOpen", L_IsMenuOpen}, {nullptr, nullptr},
     };
-    api->Lua_createtable(L, 0, 17);
+    api->Lua_createtable(L, 0, 20);
     api->LuaL_setfuncs(L, kNetplay, 0);
     api->Lua_setglobal(L, "Netplay");
 }
@@ -450,6 +471,7 @@ static void TickEditor(float deltaTime)
 {
     (void)deltaTime;
     NetplaySession::Poll();
+    NetplayMenu::TickAll(); // the menus' Opened / Closed signals (play in editor)
 }
 #endif
 
@@ -480,6 +502,7 @@ static void Tick(float deltaTime)
 {
     (void)deltaTime;
     NetplaySession::Poll();
+    NetplayMenu::TickAll(); // the menus' Opened / Closed signals
 }
 
 static int FillDesc(PolyphasePluginDesc* desc)

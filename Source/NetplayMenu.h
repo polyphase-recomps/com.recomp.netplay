@@ -41,22 +41,47 @@ protected:
     std::string mAction;
 };
 
+// SignalBus (the engine's global bus; Lua SignalBus.Emit / SignalBus.Subscribe):
+//   "Netplay.Open"    in:  opens the netplay menu (in the Mods UI: the Mods UI on its Netplay tab).
+//                          Optional argument: the name of the UI's root node ("Netplay",
+//                          "ModSettings", ...) when a scene has several; else the first one.
+//   "Netplay.Opened"  out: the netplay menu was shown
+//   "Netplay.Closed"  out: it went away (closed, B, another Mods UI tab, or the session started:
+//                          the menu closes itself then). Whoever opened it handles what's next.
+//   Both out signals carry (UI name, session state: "idle", "lobby", "ready", "running", ...).
 class NetplayMenu : public Widget
 {
 public:
     DECLARE_NODE(NetplayMenu, Widget);
 
+    virtual void Start() override;
+    virtual void Stop() override;
+    virtual void Destroy() override;
     virtual void Tick(float deltaTime) override;
 
     // Runs a NetplayButton action for the menu `from` is in.
     static void RunAction(Node* from, const std::string& action);
 
+    // The menus in the running scenes: open (the one whose UI root has that name, else the
+    // first) / close / query, and the addon's per-frame check that sends Opened / Closed.
+    static bool OpenAny(const std::string& uiName = "");
+    static bool CloseAny();
+    static bool AnyOpen();
+    static void TickAll();
+
+    bool OpenMenu();
+    void CloseMenu();
+    bool IsMenuOpen();
+    std::string UiName();
+
     static const int kFoundSlots = 4;
 
 protected:
     void SetNote(const std::string& note);
+    Node* ModsPage();
 
     std::string mNote;
     float mNoteTime = 0.0f;
     bool mSearching = false;
+    bool mWasOpen = false;
 };
