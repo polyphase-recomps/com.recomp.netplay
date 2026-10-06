@@ -53,6 +53,38 @@ knows which game this machine plays.
 - **Input delay:** the host's setting counts. Use 2 on a LAN.
 - **Over the internet:** the host forwards its UDP port on its router. IPv4 only for now.
 
+**The in-game netplay menu: Tools > Recomp > UI > Generate Network Scene...**
+
+This makes the scene `Assets/Scenes/SC_Netplay.oct`. It is built with com.recomp.mod.base's UI
+builder and widgets, so it takes the game's Menu Style and the gamepad navigates it. It has:
+- the status line and the players with their ping;
+- **Host a session**, with a port field;
+- an **Address** field and **Join**;
+- the input delay, with - and + buttons;
+- **Search the LAN**, and the sessions found (press one to join it);
+- **Start**, **Leave** and **Close**.
+
+To use it:
+1. Add the scene to the game's scene (or launcher).
+2. Open it in the game with the **Open with** button (default L3, since Select opens the mod
+   settings) or from the HOME menu.
+3. Typing an address needs a keyboard; with a gamepad, use **Search the LAN**.
+
+Generating again only adds what is missing, so your changes to the scene stay. The nodes behind
+it are `NetplayButton` (a RecompButton with an `Action`: host, join, search, joinfound:N, start,
+leave, delay-, delay+, close) and `NetplayMenu`, which fills the texts in by node name. Both work
+in packaged games.
+
+**Packaged builds without a netplay menu** take the session from environment variables. They are
+read once, when the game starts:
+
+| Variable | What it does |
+|---|---|
+| `NETPLAY=host` | Host on the default port (`host:27500` for another). |
+| `NETPLAY=join:<address>` | Join a host (`join:192.168.1.20`, or `join:192.168.1.20:27500`). |
+| `NETPLAY_PLAYERS=2` | Host: starts the game once this many players are in and ready (default 2). |
+| `NETPLAY_NAME`, `NETPLAY_DELAY` | This machine's player name, and the input delay (host). |
+
 The `Netplay` Lua table does the same, for a game's own menus. `Hosts()` and `Players()` return
 arrays of tables.
 
@@ -180,5 +212,7 @@ macOS uses the same POSIX code as Linux but hasn't been run yet.
 | `Source/netplay.h`, `netplay.c` | The core: protocol, lobby, save sync, lockstep, desync check (C99, sockets only). |
 | `Source/NetplaySession.*` | The process-wide session the addon owns (host / join / start, game registration). |
 | `Source/NetplayN64.h` | Netplay for an N64 game player (header-only). |
-| `Source/ComRecompNetplay.cpp` | The addon: per-tick polling, the `Netplay` Lua table, the editor window. |
+| `Source/NetplayMenu.*` | The in-game menu's nodes: `NetplayButton`, `NetplayMenu` (needs com.recomp.mod.base). |
+| `Source/NetplaySceneGen.*` | Tools > Recomp > UI > Generate Network Scene (editor). |
+| `Source/ComRecompNetplay.cpp` | The addon: per-tick polling, the `Netplay` Lua table, the editor windows. |
 | `Tests/` | The self-test, the headless N64 runners, the LAN lister. |

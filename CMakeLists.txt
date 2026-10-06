@@ -82,7 +82,9 @@ target_include_directories(com.recomp.netplay PRIVATE
     ${POLYPHASE_PATH}/External/glm
     ${POLYPHASE_PATH}/External/Imgui
     ${POLYPHASE_PATH}/External/ImGuizmo
-    ${VULKAN_INCLUDE_DIR})
+    ${VULKAN_INCLUDE_DIR}
+    # com.recomp.mod.base: the in-game menu's widgets and the UI builder (a sibling package)
+    "${CMAKE_CURRENT_SOURCE_DIR}/../com.recomp.mod.base/Source")
 
 target_compile_definitions(com.recomp.netplay PRIVATE
     OCTAVE_PLUGIN_EXPORT
@@ -104,6 +106,8 @@ if(WIN32)
         "${POLYPHASE_PATH}/Standalone/Build/Windows/x64/${_cfg}"
         "${POLYPHASE_PATH}/External/Lua/Build/Windows/x64/${_cfg}")
     target_link_libraries(com.recomp.netplay PRIVATE Polyphase Lua ws2_32)
+    target_link_directories(com.recomp.netplay PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../com.recomp.mod.base/Build")
+    target_link_libraries(com.recomp.netplay PRIVATE com.recomp.mod.base)
 elseif(APPLE)
     target_compile_definitions(com.recomp.netplay PRIVATE PLATFORM_MAC=1)
     set_target_properties(com.recomp.netplay PROPERTIES LINK_FLAGS "-undefined dynamic_lookup")

@@ -86,7 +86,10 @@ int main(int argc, char** argv)
             return 2;
         }
     }
-    if (rom == nullptr || (hostPort < 0 && join == nullptr))
+    // neither: the session comes from the environment (NETPLAY=host / join:<address>), as in a
+    // packaged build
+    const bool fromEnvironment = hostPort < 0 && join == nullptr;
+    if (rom == nullptr || (fromEnvironment && std::getenv("NETPLAY") == nullptr))
     {
         return 2;
     }
@@ -102,7 +105,7 @@ int main(int argc, char** argv)
     }
     NetplayN64::Configure("ssb64", "Super Smash Bros.", "recomp", rom, ownSave, players);
 
-    if (hostPort >= 0 ? !NetplaySession::Host(hostPort) : !NetplaySession::Join(join))
+    if (!fromEnvironment && (hostPort >= 0 ? !NetplaySession::Host(hostPort) : !NetplaySession::Join(join)))
     {
         std::printf("%s\n", netplay_status_text(NetplaySession::Get()));
         return 1;
@@ -128,7 +131,7 @@ int main(int argc, char** argv)
         {
             break;
         }
-        if (state == NETPLAY_LOBBY)
+        if (state == NETPLAY_LOBBY && !fromEnvironment)
         {
             NetplayPlayerInfo list[4];
             const int n = netplay_players(np, list, 4);

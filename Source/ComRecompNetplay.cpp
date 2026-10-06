@@ -17,6 +17,8 @@
 
 #include "NetplaySession.h"
 #include "NetplaySessionInternal.h"
+#include "NetplayMenu.h"
+#include "NetplaySceneGen.h"
 
 #include <cstdio>
 #include <cstring>
@@ -425,6 +427,8 @@ static EditorUIHooks* sHooks = nullptr;
 static void RegisterEditorUI(EditorUIHooks* hooks, uint64_t hookId)
 {
     sHooks = hooks;
+    // Tools > Recomp > UI > Generate Network Scene: the in-game netplay menu
+    NetplaySceneGen::Register(hooks, hookId);
     if (hooks->RegisterWindow != nullptr)
     {
         hooks->RegisterWindow(hookId, "Netplay", kWindowId, DrawWindow, nullptr);
@@ -454,6 +458,9 @@ static int OnLoad(PolyphaseEngineAPI* api)
 {
     sEngineAPI = api;
     NetplaySessionInternal::SetLogger(LogLine);
+    // the in-game menu's node types (NetplayMenu.h), also in packaged games
+    FORCE_LINK_CALL(NetplayButton);
+    FORCE_LINK_CALL(NetplayMenu);
     return 0;
 }
 

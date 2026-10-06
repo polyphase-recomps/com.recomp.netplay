@@ -6,6 +6,7 @@
 #include "NetplaySessionInternal.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -243,13 +244,93 @@ bool NetplaySession::IsPlaying()
     return sSession != nullptr && (state == NETPLAY_RUNNING);
 }
 
+// A session set up from the environment, for builds without a netplay menu of their own:
+//   NETPLAY=host            host on the default port (NETPLAY=host:27500 for another)
+//   NETPLAY=join:<address>  join a host (192.168.1.20, or 192.168.1.20:27500)
+//   NETPLAY_PLAYERS=2       host: start the game once this many players are in and ready
+//   NETPLAY_NAME, NETPLAY_DELAY  this machine's player name, the input delay (host)
+// Read once, when the game has registered itself (its player's first frame).
+namespace
+{
+int sAutoStartPlayers = 0;
+
+void AutoSessionFromEnvironment()
+{
+    static bool sDone = false;
+
+    if (sDone || !sGame.set)
+    {
+        return;
+    }
+    sDone = true;
+    const char* mode = std::getenv("NETPLAY");
+    if (mode == nullptr || mode[0] == 0)
+    {
+        return;
+    }
+    if (const char* name = std::getenv("NETPLAY_NAME"))
+    {
+        NetplaySession::SetPlayerName(name);
+    }
+    if (const char* delay = std::getenv("NETPLAY_DELAY"))
+    {
+        NetplaySession::SetInputDelay(std::atoi(delay));
+    }
+    if (std::strncmp(mode, "host", 4) == 0)
+    {
+        const int port = mode[4] == ':' ? std::atoi(mode + 5) : 0;
+        const char* players = std::getenv("NETPLAY_PLAYERS");
+        sAutoStartPlayers = players != nullptr ? std::atoi(players) : 2;
+        if (sAutoStartPlayers < 2 || sAutoStartPlayers > NETPLAY_MAX_PLAYERS)
+        {
+            sAutoStartPlayers = 2;
+        }
+        NetplaySession::Host(port);
+        char line[96];
+        std::snprintf(line, sizeof(line), "[netplay] (NETPLAY=%s) starts when %d players are ready", mode,
+                      sAutoStartPlayers);
+        Log(line);
+    }
+    else if (std::strncmp(mode, "join:", 5) == 0 && mode[5] != 0)
+    {
+        NetplaySession::Join(mode + 5);
+    }
+    else
+    {
+        Log((std::string("[netplay] NETPLAY=") + mode + ": expected host, host:<port> or join:<address>").c_str());
+    }
+}
+
+// Host from the environment: start once everyone expected is in and has the save data.
+void AutoStart()
+{
+    if (sAutoStartPlayers == 0 || netplay_state(sSession) != NETPLAY_LOBBY)
+    {
+        return;
+    }
+    NetplayPlayerInfo players[NETPLAY_MAX_PLAYERS];
+    const int n = netplay_players(sSession, players, NETPLAY_MAX_PLAYERS);
+    int ready = 0;
+    for (int i = 0; i < n; i++)
+    {
+        ready += players[i].ready;
+    }
+    if (n >= sAutoStartPlayers && ready == n && NetplaySession::Start())
+    {
+        sAutoStartPlayers = 0;
+    }
+}
+}
+
 void NetplaySession::Poll()
 {
+    AutoSessionFromEnvironment();
     if (sSession == nullptr)
     {
         return;
     }
     netplay_poll(sSession);
+    AutoStart();
     const NetplayState state = netplay_state(sSession);
     if (state != sLastState)
     {

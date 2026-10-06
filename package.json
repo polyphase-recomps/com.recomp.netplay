@@ -4,6 +4,9 @@
     "displayName": "Recomp Netplay",
     "description": "Networked multiplayer for the recomp game runtimes (N64 first): lockstep input sync over UDP, LAN discovery and IP:port joining, save sync, desync detection. Cross-platform (Windows, Linux, macOS).",
     "version": "1.0.0",
+    "dependencies": {
+        "com.recomp.mod.base": "https://github.com/polyphase-recomps/com.recomp.mod.base"
+    },
     "native": {
         "target": "engine",
         "sourceDir": "Source",
