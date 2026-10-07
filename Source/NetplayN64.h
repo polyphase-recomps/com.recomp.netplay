@@ -193,9 +193,21 @@ int RunFrames(float deltaTime, const PortPad& local, Reboot reboot, AfterFrame a
         uint64_t hash = 0;
         if (hashed)
         {
-            int w = 0, h = 0;
-            const unsigned char* fb = n64_framebuffer(&w, &h);
-            hash = fb != nullptr ? netplay_hash(NETPLAY_HASH_SEED, fb, (size_t)w * (size_t)h * 4) : 0;
+#ifdef N64_HAS_FRAME_SIGNATURE
+            // what the frame drew (its display lists): the same whatever render scale each
+            // machine picked, where a hash of the picture would differ
+            const unsigned long long signature = n64_frame_signature();
+            if (signature != 0)
+            {
+                hash = netplay_hash(NETPLAY_HASH_SEED, &signature, sizeof(signature));
+            }
+            else
+#endif
+            {
+                int w = 0, h = 0;
+                const unsigned char* fb = n64_framebuffer(&w, &h);
+                hash = fb != nullptr ? netplay_hash(NETPLAY_HASH_SEED, fb, (size_t)w * (size_t)h * 4) : 0;
+            }
         }
         netplay_frame_done(np, hash);
         afterFrame();

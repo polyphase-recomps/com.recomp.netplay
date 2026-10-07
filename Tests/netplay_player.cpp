@@ -100,11 +100,15 @@ int main(int argc, char** argv)
         else if (!std::strcmp(argv[i], "--delay") && i + 1 < argc) delay = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--nobg")) background = false;
         else if (!std::strcmp(argv[i], "--nowait")) NetplayN64::WaitBudgetMs() = 0;
+#ifdef N64_HAS_RENDER_SCALE
+        // draw at 320x240 times N: machines at different scales must not see a desync
+        else if (!std::strcmp(argv[i], "--scale") && i + 1 < argc) n64_set_render_scale(std::atoi(argv[++i]));
+#endif
         else
         {
             std::fprintf(stderr, "usage: netplay_player --rom game.z64 (--host [port] --players N [--save f] | --join a[:p])"
                                  " [--frames N] [--dir d] [--fuzz s] [--realtime] [--lag ms[,jitter]] [--delay N]"
-                                 " [--nobg] [--nowait]\n");
+                                 " [--nobg] [--nowait] [--scale N]\n");
             return 2;
         }
     }

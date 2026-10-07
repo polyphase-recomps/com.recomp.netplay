@@ -34,8 +34,10 @@ results on every machine. So the machines only exchange controller input.
    `Saves/netplay.sra`, so a player's own save is never touched.
 3. When the session ends, each game reboots with its own save.
 
-**Desync check.** Every 60 frames each machine hashes the picture its game drew. If any differs,
-the session stops with a message. That means a different build or ROM, not a network problem.
+**Desync check.** Every 60 frames each machine hashes what its game drew. If any differs, the
+session stops with a message. That means a different build or ROM, not a network problem. N64
+games hash the frame's display lists (`n64_frame_signature`: commands, vertices, matrices), so
+players can pick different render resolutions; older game libraries hash the picture.
 
 **The wire.**
 - UDP, little-endian, so any CPU can play with any other.
